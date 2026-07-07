@@ -12,6 +12,10 @@ const App = () => {
         <Route path="/login" element={<LoginPage />} />
         <Route path="/signup" element={<SignUpPage />} />
       </Routes>
+      {/* Zustand is used to manage global state. */}
+      {/* A store in zustand is a simple object that holds the application's state and provides methods to update it. */}
+      {/* The store keeps the global state across the application. So there is no need to pass props down through multiple components. */}
+      {/* Usually a state is a simple value or an object that represents the current status of the app. ex for state :- {value, setValue} this is a simple state. */}
     </div>
   );
 };
