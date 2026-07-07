@@ -23,14 +23,14 @@ app.use("/api/messages", messageRoutes);
 // if the client/dist folder exists, serve the static files from there
 // static files means the files that are generated after building the react app, which are present in the dist folder of client
 // by doing this, we can serve the frontend and backend from the same server, which is useful for deployment
-if (ENV.NODE_ENV === "production") {
-  // send the static files from react app
-  app.use(express.static(path.join(__dirname, "../client/dist")));
-  // if any route other than api is hit, send the index.html file of react app
-  app.get("*", (req, res) => {
-    res.sendFile(path.join(__dirname, "../client/dist/index.html"));
-  });
-}
+// if (ENV.NODE_ENV === "production") {
+//   // send the static files from react app
+//   app.use(express.static(path.join(__dirname, "../client/dist")));
+//   // if any route other than api is hit, send the index.html file of react app
+//   app.get("*", (req, res) => {
+//     res.sendFile(path.join(__dirname, "../client/dist/index.html"));
+//   });
+// }
 
 app.listen(PORT, () => {
   console.log(`server is running in port ${PORT}`);
