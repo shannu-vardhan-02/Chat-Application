@@ -1,15 +1,34 @@
 function MessagesLoadingSkeleton() {
+  const items = [
+    { side: "start", width: "w-40" },
+    { side: "end",   width: "w-52" },
+    { side: "start", width: "w-32" },
+    { side: "end",   width: "w-44" },
+    { side: "start", width: "w-56" },
+    { side: "end",   width: "w-36" },
+  ];
+
   return (
-    <div className="max-w-3xl mx-auto space-y-6">
-      {[...Array(6)].map((_, index) => (
+    <div className="max-w-3xl mx-auto space-y-4 py-4 animate-pulse">
+      {items.map((item, i) => (
         <div
-          key={index}
-          className={`chat ${index % 2 === 0 ? "chat-start" : "chat-end"} animate-pulse`}
+          key={i}
+          className={`flex items-end gap-2 ${item.side === "end" ? "flex-row-reverse" : ""}`}
         >
-          <div className={`chat-bubble bg-slate-800 text-white w-32`}></div>
+          {/* Avatar skeleton */}
+          {item.side === "start" && (
+            <div className="size-7 rounded-full bg-slate-800 flex-shrink-0" />
+          )}
+          {/* Bubble skeleton */}
+          <div
+            className={`h-9 ${item.width} rounded-2xl ${
+              item.side === "end" ? "bg-cyan-900/40 rounded-tr-sm" : "bg-slate-800 rounded-tl-sm"
+            }`}
+          />
         </div>
       ))}
     </div>
   );
 }
+
 export default MessagesLoadingSkeleton;

@@ -81,11 +81,13 @@ export const useChatStore = create((set, get) => ({
 
     try {
       const res = await axiosInstance.post(`/messages/send/${selectedUser._id}`, messageData);
-      // Replace optimistic message with real server response
-      set({ messages: messages.concat(res.data) });
+      // Replace the optimistic message with the confirmed server message
+      set((state) => ({
+        messages: state.messages.map((m) => (m._id === tempId ? res.data : m)),
+      }));
     } catch (error) {
       // Revert optimistic update on failure
-      set({ messages: messages });
+      set((state) => ({ messages: state.messages.filter((m) => m._id !== tempId) }));
       toast.error(error.response?.data?.message || "Something went wrong");
     }
   },
@@ -114,6 +116,6 @@ export const useChatStore = create((set, get) => ({
 
   unsubscribeFromMessages: () => {
     const socket = useAuthStore.getState().socket;
-    socket.off("newMessage");
+    if (socket) socket.off("newMessage");
   },
 }));

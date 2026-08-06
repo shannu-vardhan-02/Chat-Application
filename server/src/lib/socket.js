@@ -7,9 +7,27 @@ import { socketAuthMiddleware } from "../middlewares/socket.auth.middleware.js";
 const app = express();
 const server = http.createServer(app);
 
+// Allowed origins for Socket.IO (mirrors HTTP CORS in server.js)
+const socketAllowedOrigins = [
+  ENV.CLIENT_URL?.replace(/\/$/, ""),
+  "http://localhost:5173",
+  "https://chat-application-pearl-five.vercel.app",
+].filter(Boolean);
+
 const io = new Server(server, {
   cors: {
-    origin: [ENV.CLIENT_URL, "http://localhost:5173"],
+    origin: (origin, callback) => {
+      // Allow requests with no origin (mobile apps, curl, etc.)
+      if (!origin) return callback(null, true);
+      const cleanOrigin = origin.replace(/\/$/, "");
+      if (
+        socketAllowedOrigins.includes(cleanOrigin) ||
+        cleanOrigin.endsWith(".vercel.app")
+      ) {
+        return callback(null, true);
+      }
+      return callback(new Error("Not allowed by CORS"), false);
+    },
     credentials: true,
   },
 });

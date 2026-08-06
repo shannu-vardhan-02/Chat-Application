@@ -44,6 +44,7 @@ function SignUpPage() {
 
                       <input
                         type="text"
+                        autoComplete="name"
                         value={formData.fullName}
                         onChange={(e) => setFormData({ ...formData, fullName: e.target.value })}
                         className="input"
@@ -60,6 +61,7 @@ function SignUpPage() {
 
                       <input
                         type="email"
+                        autoComplete="email"
                         value={formData.email}
                         onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                         className="input"
@@ -76,6 +78,7 @@ function SignUpPage() {
 
                       <input
                         type={showPassword ? "text" : "password"}
+                        autoComplete="new-password"
                         value={formData.password}
                         onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                         className="input pr-10"
