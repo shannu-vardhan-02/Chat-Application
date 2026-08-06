@@ -4,6 +4,7 @@ import {
   getMessagesByUserId,
   sendMessage,
   getAllChats,
+  deleteChat,
 } from "../controllers/message.controller.js";
 import { protectRoute } from "../middlewares/auth.middleware.js";
 import { arcjetProtection } from "../middlewares/arcjet.middleware.js";
@@ -20,4 +21,5 @@ router.get("/chats", getAllChats);
 router.get("/:id", getMessagesByUserId);
 
 router.post("/send/:id", sendMessage); // Send a message to a user by their ID
+router.delete("/chat/:id", deleteChat); // Delete all messages with a specific user
 export default router;

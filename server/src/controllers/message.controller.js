@@ -125,3 +125,24 @@ export const getAllChats = async (req, res) => {
     res.status(500).json({ message: "Server Error" });
   }
 };
+
+// Delete all messages between the logged-in user and a specific contact
+// route: DELETE /api/messages/chat/:id
+export const deleteChat = async (req, res) => {
+  try {
+    const loggedInUserId = req.user._id;
+    const { id: contactId } = req.params;
+
+    await Message.deleteMany({
+      $or: [
+        { senderId: loggedInUserId, receiverId: contactId },
+        { senderId: contactId, receiverId: loggedInUserId },
+      ],
+    });
+
+    res.status(200).json({ message: "Chat deleted successfully" });
+  } catch (error) {
+    console.log("Error deleting chat:", error);
+    res.status(500).json({ message: "Server Error" });
+  }
+};

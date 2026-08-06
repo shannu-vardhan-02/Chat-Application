@@ -24,7 +24,7 @@ function ProfileHeader() {
         {/* Name + status */}
         <div className="min-w-0 overflow-hidden">
           <p className="text-[10px] font-bold tracking-widest uppercase text-cyan-500/70 leading-none mb-0.5">
-            Charchalu
+            muCHATlu
           </p>
           <h3 className="text-slate-200 font-semibold text-sm truncate group-hover:text-cyan-400 transition-colors leading-tight">
             {authUser?.fullName}
