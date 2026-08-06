@@ -1,6 +1,7 @@
 import Message from "../models/message.model.js";
 import User from "../models/user.model.js";
 import cloudinary from "../lib/cloudinary.js";
+import { getReceiverSocketId, io } from "../lib/socket.js";
 
 export const getAllContacts = async (req, res) => {
   try {
@@ -41,29 +42,29 @@ export const getMessagesByUserId = async (req, res) => {
 };
 
 // send a message from the logged-in user to another user (identified by their ID in the route parameter)
-// route : POST /api/messages/:id
+// route : POST /api/messages/send/:id
 export const sendMessage = async (req, res) => {
   try {
     const { text, image } = req.body;
     const senderId = req.user._id;
     const { id: receiverId } = req.params;
 
-    // Validate receiver exists
-    const receiver = await User.findById(receiverId);
-    if (!receiver) {
-      return res.status(404).json({ message: "Recipient not found" });
+    if (!text && !image) {
+      return res.status(400).json({ message: "Message must have text or image" });
+    }
+    if (senderId.equals(receiverId)) {
+      return res.status(400).json({ message: "Cannot send messages to yourself." });
     }
 
-    // Ensure message has content
-    if (!text && !image) {
-      return res
-        .status(400)
-        .json({ message: "Message must have text or image" });
+    // Validate receiver exists
+    const receiverExists = await User.exists({ _id: receiverId });
+    if (!receiverExists) {
+      return res.status(404).json({ message: "Recipient not found" });
     }
 
     let imageUrl;
     if (image) {
-      // upload base5 image to cloudinary and get the URL
+      // upload base64 image to cloudinary and get the URL
       const uploadResponse = await cloudinary.uploader.upload(image);
       imageUrl = uploadResponse.secure_url;
     }
@@ -76,10 +77,15 @@ export const sendMessage = async (req, res) => {
       image: imageUrl,
     });
 
-    // todo - send message in realtime if user is online using socket.io
-
     // save the message to the database
     await newMessage.save();
+
+    // Real-time delivery: if receiver is online, emit the message directly to their socket
+    const receiverSocketId = getReceiverSocketId(receiverId);
+    if (receiverSocketId) {
+      io.to(receiverSocketId).emit("newMessage", newMessage);
+    }
+
     res.status(201).json(newMessage);
   } catch (error) {
     console.log("Error sending message:", error);

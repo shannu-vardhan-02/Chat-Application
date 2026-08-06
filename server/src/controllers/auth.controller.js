@@ -38,8 +38,8 @@ export const signup = async (req, res) => {
     });
 
     if (newUser) {
-      await newUser.save();
-      generateToken(newUser._id, res);
+      const savedUser = await newUser.save();
+      generateToken(savedUser._id, res);
       res.status(201).json({
         message: "User created successfully",
         _id: newUser._id,
@@ -91,38 +91,41 @@ export const login = async (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 };
-export const logout = async (_, res) => {
-  try {
-    res.clearCookie("jwt_token", {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
-      path: "/", // ensure the cookie is cleared for the entire site
-    });
-    // cookie will not be deleted if the token name is not the same as the one set in the generateToken function, so we need to specify the name of the cookie to clear. We have to put the name of the cookie in the generateToken function as same for it to work.
-    res.status(200).json({ message: "Logout successful" });
-  } catch (error) {
-    console.error("LOGOUT ERROR : ", error);
-    res.status(500).json({ message: "Server error" });
-  }
+export const logout = (_, res) => {
+  // Clear the "jwt" cookie — must match the name set in generateToken
+  res.cookie("jwt", "", { maxAge: 0 });
+  res.status(200).json({ message: "Logout successful" });
 };
 export const updateProfile = async (req, res) => {
   try {
-    const { profilePic } = req.body;
-    if (!profilePic) {
-      return res.status(400).json({ message: "Profile picture is required" });
+    const { profilePic, fullName } = req.body;
+    const userId = req.user._id;
+    const updateData = {};
+
+    if (fullName && fullName.trim()) {
+      updateData.fullName = fullName.trim();
     }
 
-    const userId = req.user._id;
-    const uploadResponse = await cloudinary.uploader.upload(profilePic);
+    if (profilePic) {
+      if (profilePic.startsWith("data:image")) {
+        const uploadResponse = await cloudinary.uploader.upload(profilePic);
+        updateData.profilePic = uploadResponse.secure_url;
+      } else {
+        updateData.profilePic = profilePic;
+      }
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      return res.status(400).json({ message: "No data provided for update" });
+    }
+
     const updatedUser = await User.findByIdAndUpdate(
       userId,
-      { profilePic: uploadResponse.secure_url },
-      { new: true },
-    );
-    res
-      .status(200)
-      .json({ message: "Profile updated successfully", user: updatedUser });
+      updateData,
+      { new: true }
+    ).select("-password");
+
+    res.status(200).json(updatedUser);
   } catch (error) {
     console.error("UPDATE PROFILE ERROR : ", error);
     res.status(500).json({ message: "Server error" });
