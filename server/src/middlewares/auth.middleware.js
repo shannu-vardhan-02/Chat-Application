@@ -3,18 +3,17 @@ import User from "../models/user.model.js";
 import { ENV } from "../lib/env.js";
 
 export const protectRoute = async (req, res, next) => {
-  const token = req.cookies.jwt_token;
+  const token = req.cookies.jwt; // must match cookie name in utils.js
   if (!token) {
     return res.status(401).json({ message: "Unauthorized, no token provided" });
   }
   try {
-    const decoded = jwt.verify(token, ENV.JWT_SECRET); // decoded token contains the payload that was signed when the token was created, which typically includes the user's ID and other relevant information
-    req.user = decoded; // Attach the decoded user information to the request object
+    const decoded = jwt.verify(token, ENV.JWT_SECRET); // decoded token contains userId
     if (!decoded) {
       return res.status(401).json({ message: "Unauthorized, invalid token" });
     }
 
-    const user = await User.findById(decoded.id).select("-password"); // Fetch the user from the database using the ID from the token, excluding the password field
+    const user = await User.findById(decoded.userId).select("-password"); // Fetch user by decoded.userId
     if (!user) {
       return res.status(401).json({ message: "Unauthorized, user not found" });
     }

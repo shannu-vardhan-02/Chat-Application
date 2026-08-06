@@ -20,7 +20,7 @@ router.put("/update-profile", protectRoute, updateProfile);
 // what does protectRoute do? In one line: It is a middleware that checks if the user is authenticated before allowing access to the route, ensuring that only logged-in users can update their profile.
 // this route is a PUT because it is updating the user's profile, which is changing the state of the server, but it is idempotent because it can be called multiple times without changing the state of the server after the first call
 router.get("/check-auth", protectRoute, (req, res) => {
-  // this route is just to check if the user is authenticated, it does not change the state of the server, so it is a GET request
-  res.status(200).json({ message: "User is authenticated" });
+  // Return the full user object so the frontend can restore session state
+  res.status(200).json(req.user);
 });
 export default router;
