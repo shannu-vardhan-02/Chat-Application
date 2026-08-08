@@ -5,6 +5,7 @@ import cors from "cors";
 
 import authRoutes from "./routes/auth.routes.js";
 import messageRoutes from "./routes/message.routes.js";
+import uploadRoutes from "./routes/upload.routes.js";
 import { connectDB } from "./lib/db.js";
 import { ENV } from "./lib/env.js";
 import { app, server } from "./lib/socket.js";
@@ -34,11 +35,12 @@ app.use(
   })
 );
 
-app.use(express.json({ limit: "5mb" })); // req.body — 5mb limit for base64 image uploads
+app.use(express.json({ limit: "100kb" })); // Images no longer pass through server — only small JSON payloads
 app.use(cookieParser()); // parse cookies for JWT authentication
 
 app.use("/api/auth", authRoutes);
 app.use("/api/messages", messageRoutes);
+app.use("/api/upload", uploadRoutes);
 
 // Deployment: serve static frontend if dist folder exists
 if (ENV.NODE_ENV === "production") {

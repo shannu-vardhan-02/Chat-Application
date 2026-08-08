@@ -4,30 +4,67 @@ import { useChatStore } from "../store/useChatStore";
 import toast from "react-hot-toast";
 import { ImageIcon, SendIcon, XIcon } from "lucide-react";
 import BorderAnimatedContainer from "./BorderAnimatedContainer";
+import { uploadToCloudinary } from "../lib/uploadImage";
 
 function MessageInput() {
   const { playRandomKeyStrokeSound } = useKeyboardSound();
   const [text, setText] = useState("");
-  const [imagePreview, setImagePreview] = useState(null);
+
+  // Local preview (object URL — lightweight, no base64 string in state)
+  const [previewUrl, setPreviewUrl] = useState(null);
+  // The actual File object (not base64)
+  const [pendingFile, setPendingFile] = useState(null);
+
+  // Upload progress: null = idle, 0-100 = uploading
+  const [uploadProgress, setUploadProgress] = useState(null);
+  const [isUploading, setIsUploading] = useState(false);
 
   const fileInputRef = useRef(null);
-  const inputRef     = useRef(null);
+  const inputRef = useRef(null);
+  const previewUrlRef = useRef(null); // keep track to revoke
 
   const { sendMessage, isSoundEnabled } = useChatStore();
 
   const handleSendMessage = useCallback(
-    (e) => {
+    async (e) => {
       e?.preventDefault();
-      if (!text.trim() && !imagePreview) return;
+      if ((!text.trim() && !pendingFile) || isUploading) return;
       if (isSoundEnabled) playRandomKeyStrokeSound();
 
-      sendMessage({ text: text.trim(), image: imagePreview });
+      let imageUrl = null;
+
+      if (pendingFile) {
+        setIsUploading(true);
+        setUploadProgress(0);
+        try {
+          imageUrl = await uploadToCloudinary(pendingFile, "message", (p) =>
+            setUploadProgress(p)
+          );
+        } catch (err) {
+          toast.error(err.message || "Image upload failed");
+          setIsUploading(false);
+          setUploadProgress(null);
+          return;
+        } finally {
+          setIsUploading(false);
+          setUploadProgress(null);
+        }
+      }
+
+      await sendMessage({ text: text.trim(), image: imageUrl });
+
       setText("");
-      setImagePreview(null);
+      setPendingFile(null);
+      // Revoke the object URL to free memory
+      if (previewUrlRef.current) {
+        URL.revokeObjectURL(previewUrlRef.current);
+        previewUrlRef.current = null;
+      }
+      setPreviewUrl(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
       setTimeout(() => inputRef.current?.focus(), 0);
     },
-    [text, imagePreview, isSoundEnabled, playRandomKeyStrokeSound, sendMessage]
+    [text, pendingFile, isUploading, isSoundEnabled, playRandomKeyStrokeSound, sendMessage]
   );
 
   // Enter = send
@@ -41,46 +78,91 @@ function MessageInput() {
   const handleImageChange = (e) => {
     const file = e.target.files[0];
     if (!file) return;
+
     if (!file.type.startsWith("image/")) {
       toast.error("Please select an image file");
       return;
     }
-    if (file.size > 5 * 1024 * 1024) {
-      toast.error("Image must be smaller than 5 MB");
+    // 15 MB raw limit (will be compressed before upload)
+    if (file.size > 15 * 1024 * 1024) {
+      toast.error("Image must be smaller than 15 MB");
       return;
     }
-    const reader = new FileReader();
-    reader.onloadend = () => setImagePreview(reader.result);
-    reader.readAsDataURL(file);
+
+    // Revoke any previous preview URL
+    if (previewUrlRef.current) {
+      URL.revokeObjectURL(previewUrlRef.current);
+    }
+
+    const objectUrl = URL.createObjectURL(file);
+    previewUrlRef.current = objectUrl;
+    setPreviewUrl(objectUrl);
+    setPendingFile(file);
   };
 
   const removeImage = () => {
-    setImagePreview(null);
+    if (previewUrlRef.current) {
+      URL.revokeObjectURL(previewUrlRef.current);
+      previewUrlRef.current = null;
+    }
+    setPreviewUrl(null);
+    setPendingFile(null);
+    setUploadProgress(null);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  const canSend = text.trim() || imagePreview;
+  const canSend = (text.trim() || pendingFile) && !isUploading;
 
   return (
     <div className="px-3 sm:px-4 pb-4 pt-2 bg-slate-900/70 border-t border-slate-800/50 flex-shrink-0">
       {/* Image preview */}
-      {imagePreview && (
-        <div className="mb-2 flex items-center gap-2 animate-fade-in-up">
+      {previewUrl && (
+        <div className="mb-2 flex items-center gap-3 animate-fade-in-up">
           <div className="relative inline-block">
             <img
-              src={imagePreview}
+              src={previewUrl}
               alt="Preview"
               className="h-16 w-16 object-cover rounded-xl border border-slate-700 shadow-lg"
             />
-            <button
-              onClick={removeImage}
-              type="button"
-              className="absolute -top-1.5 -right-1.5 size-5 rounded-full bg-slate-700 border border-slate-600 flex items-center justify-center text-slate-300 hover:bg-rose-600 hover:text-white transition-colors shadow"
-            >
-              <XIcon className="size-3" />
-            </button>
+            {/* Upload progress overlay */}
+            {isUploading && (
+              <div className="absolute inset-0 rounded-xl bg-slate-900/70 flex items-center justify-center">
+                <span className="text-[10px] font-bold text-cyan-400">
+                  {uploadProgress ?? 0}%
+                </span>
+              </div>
+            )}
+            {!isUploading && (
+              <button
+                onClick={removeImage}
+                type="button"
+                className="absolute -top-1.5 -right-1.5 size-5 rounded-full bg-slate-700 border border-slate-600 flex items-center justify-center text-slate-300 hover:bg-rose-600 hover:text-white transition-colors shadow"
+              >
+                <XIcon className="size-3" />
+              </button>
+            )}
           </div>
-          <span className="text-xs text-slate-400">Image ready to send</span>
+
+          {/* Progress bar */}
+          <div className="flex-1">
+            {isUploading ? (
+              <div className="space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-cyan-400 font-medium">Uploading…</span>
+                  <span className="text-xs text-slate-400">{uploadProgress ?? 0}%</span>
+                </div>
+                <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-cyan-500 to-cyan-400 rounded-full transition-all duration-200"
+                    style={{ width: `${uploadProgress ?? 0}%` }}
+                  />
+                </div>
+                <p className="text-[10px] text-slate-500">Compressing & uploading…</p>
+              </div>
+            ) : (
+              <span className="text-xs text-slate-400">Image ready to send</span>
+            )}
+          </div>
         </div>
       )}
 
@@ -104,11 +186,12 @@ function MessageInput() {
             id="attach-image-btn"
             type="button"
             onClick={() => fileInputRef.current?.click()}
+            disabled={isUploading}
             className={`flex-shrink-0 p-2 rounded-xl transition-all ${
-              imagePreview
+              previewUrl
                 ? "bg-cyan-500/20 text-cyan-400"
                 : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/80"
-            }`}
+            } disabled:opacity-40 disabled:cursor-not-allowed`}
             title="Attach image"
           >
             <ImageIcon className="size-5" />
@@ -125,8 +208,9 @@ function MessageInput() {
               if (isSoundEnabled) playRandomKeyStrokeSound();
             }}
             onKeyDown={handleKeyDown}
-            className="flex-1 bg-transparent border-none focus:outline-none focus:ring-0 text-slate-200 placeholder-slate-500 text-sm py-1.5"
-            placeholder="Type a message…"
+            disabled={isUploading}
+            className="flex-1 bg-transparent border-none focus:outline-none focus:ring-0 text-slate-200 placeholder-slate-500 text-sm py-1.5 disabled:opacity-50"
+            placeholder={isUploading ? "Uploading image…" : "Type a message…"}
           />
 
           {/* Send button */}
