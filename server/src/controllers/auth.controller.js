@@ -107,11 +107,24 @@ export const updateProfile = async (req, res) => {
     }
 
     if (profilePic) {
-      if (profilePic.startsWith("data:image")) {
-        const uploadResponse = await cloudinary.uploader.upload(profilePic);
-        updateData.profilePic = uploadResponse.secure_url;
-      } else {
+      // The client now uploads directly to Cloudinary and sends us the final URL.
+      if (profilePic.startsWith("https://res.cloudinary.com/")) {
+        // Delete the old profile pic from Cloudinary if it exists and is a Cloudinary URL
+        const oldPic = req.user.profilePic;
+        if (oldPic && oldPic.startsWith("https://res.cloudinary.com/")) {
+          try {
+            const uploadIndex = oldPic.indexOf("/upload/");
+            if (uploadIndex !== -1) {
+              const afterUpload = oldPic.substring(uploadIndex + 8);
+              const withoutVersion = afterUpload.replace(/^v\d+\//, "");
+              const publicId = withoutVersion.replace(/\.[^/.]+$/, "");
+              cloudinary.uploader.destroy(publicId).catch(() => {});
+            }
+          } catch {}
+        }
         updateData.profilePic = profilePic;
+      } else {
+        return res.status(400).json({ message: "Invalid image URL" });
       }
     }
 

@@ -64,9 +64,13 @@ export const sendMessage = async (req, res) => {
 
     let imageUrl;
     if (image) {
-      // upload base64 image to cloudinary and get the URL
-      const uploadResponse = await cloudinary.uploader.upload(image);
-      imageUrl = uploadResponse.secure_url;
+      // The client now uploads directly to Cloudinary and sends us the URL.
+      // We only accept a valid https:// Cloudinary URL — never raw base64.
+      if (image.startsWith("https://res.cloudinary.com/")) {
+        imageUrl = image;
+      } else {
+        return res.status(400).json({ message: "Invalid image URL" });
+      }
     }
 
     // create a new message document - this is the message model schema
@@ -133,12 +137,50 @@ export const deleteChat = async (req, res) => {
     const loggedInUserId = req.user._id;
     const { id: contactId } = req.params;
 
+    // Collect all Cloudinary image URLs from this chat before deleting
+    const chatMessages = await Message.find({
+      $or: [
+        { senderId: loggedInUserId, receiverId: contactId },
+        { senderId: contactId, receiverId: loggedInUserId },
+      ],
+      image: { $exists: true, $ne: null },
+    }).select("image");
+
+    // Delete the messages from DB first
     await Message.deleteMany({
       $or: [
         { senderId: loggedInUserId, receiverId: contactId },
         { senderId: contactId, receiverId: loggedInUserId },
       ],
     });
+
+    // Asynchronously clean up Cloudinary images (fire-and-forget so response is fast)
+    if (chatMessages.length > 0) {
+      const publicIds = chatMessages
+        .map((msg) => {
+          try {
+            // Extract public_id from URL: .../upload/vXXX/<folder/public_id>.ext
+            const url = msg.image;
+            const uploadIndex = url.indexOf("/upload/");
+            if (uploadIndex === -1) return null;
+            // Remove version segment (v12345/) if present
+            const afterUpload = url.substring(uploadIndex + 8);
+            const withoutVersion = afterUpload.replace(/^v\d+\//, "");
+            // Remove file extension
+            const publicId = withoutVersion.replace(/\.[^/.]+$/, "");
+            return publicId;
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean);
+
+      if (publicIds.length > 0) {
+        cloudinary.api.delete_resources(publicIds).catch((err) =>
+          console.warn("Cloudinary cleanup warning:", err.message)
+        );
+      }
+    }
 
     res.status(200).json({ message: "Chat deleted successfully" });
   } catch (error) {

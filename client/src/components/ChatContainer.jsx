@@ -1,10 +1,11 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuthStore } from "../store/useAuthStore";
 import { useChatStore } from "../store/useChatStore";
 import ChatHeader from "./ChatHeader";
 import NoChatHistoryPlaceholder from "./NoChatHistoryPlaceholder";
 import MessageInput from "./MessageInput";
 import MessagesLoadingSkeleton from "./MessagesLoadingSkeleton";
+import ImageLightbox from "./ImageLightbox";
 
 // Format timestamp: show time for today, date+time for older messages
 function formatTime(dateStr) {
@@ -39,6 +40,41 @@ function groupMessages(messages) {
   return groups;
 }
 
+/**
+ * Renders a chat image with a loading skeleton/blur-up effect.
+ * Shows a pulsing grey placeholder while the Cloudinary image loads.
+ */
+function ChatImage({ src, alt, onClick }) {
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState(false);
+
+  return (
+    <div className="relative rounded-lg overflow-hidden mb-1.5 max-h-60">
+      {/* Skeleton shown while image loads */}
+      {!loaded && !error && (
+        <div className="absolute inset-0 bg-slate-700/60 animate-pulse rounded-lg" />
+      )}
+      {error ? (
+        <div className="flex items-center justify-center h-24 bg-slate-800/60 rounded-lg text-slate-500 text-xs">
+          Image failed to load
+        </div>
+      ) : (
+        <img
+          src={src}
+          alt={alt}
+          onLoad={() => setLoaded(true)}
+          onError={() => { setLoaded(true); setError(true); }}
+          onClick={onClick}
+          className={`w-full max-h-60 object-cover rounded-lg cursor-pointer
+            transition-all duration-300 hover:brightness-90 hover:scale-[1.01]
+            ${loaded ? "opacity-100" : "opacity-0"}`}
+          title="Click to view full size"
+        />
+      )}
+    </div>
+  );
+}
+
 function ChatContainer() {
   const {
     selectedUser,
@@ -51,6 +87,9 @@ function ChatContainer() {
   const { authUser } = useAuthStore();
   const messageEndRef = useRef(null);
   const prevLengthRef = useRef(0);
+
+  // Lightbox state
+  const [lightboxSrc, setLightboxSrc] = useState(null);
 
   useEffect(() => {
     getMessagesByUserId(selectedUser._id);
@@ -132,12 +171,12 @@ function ChatContainer() {
                           ${isSent ? "bubble-sent" : "bubble-received"}
                         `}
                       >
-                        {/* Image attachment */}
+                        {/* Image attachment with skeleton loading + lightbox on click */}
                         {msg.image && (
-                          <img
+                          <ChatImage
                             src={msg.image}
-                            alt="Shared"
-                            className="rounded-lg max-h-60 object-cover mb-1.5 w-full"
+                            alt="Shared image"
+                            onClick={() => setLightboxSrc(msg.image)}
                           />
                         )}
                         {/* Text */}
@@ -164,6 +203,15 @@ function ChatContainer() {
       </div>
 
       <MessageInput />
+
+      {/* Full-screen image lightbox */}
+      {lightboxSrc && (
+        <ImageLightbox
+          src={lightboxSrc}
+          alt="Full-size image"
+          onClose={() => setLightboxSrc(null)}
+        />
+      )}
     </div>
   );
 }

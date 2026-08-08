@@ -85,13 +85,15 @@ export const useChatStore = create((set, get) => ({
 
     const tempId = `temp-${Date.now()}`;
 
-    // Optimistic update: show message immediately before server confirms
+    // Optimistic update: show message immediately before server confirms.
+    // At this point, messageData.image is already a Cloudinary URL (upload
+    // happened in MessageInput before this is called) or null.
     const optimisticMessage = {
       _id: tempId,
       senderId: authUser._id,
       receiverId: selectedUser._id,
       text: messageData.text,
-      image: messageData.image,
+      image: messageData.image || null,
       createdAt: new Date().toISOString(),
       isOptimistic: true,
     };

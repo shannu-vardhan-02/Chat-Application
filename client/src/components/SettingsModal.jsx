@@ -14,6 +14,7 @@ import {
 import { useAuthStore } from "../store/useAuthStore";
 import { useChatStore } from "../store/useChatStore";
 import toast from "react-hot-toast";
+import { uploadToCloudinary } from "../lib/uploadImage";
 
 const mouseClickSound = new Audio("/sounds/mouse-click.mp3");
 
@@ -22,10 +23,15 @@ function SettingsModal() {
   const { isSettingsOpen, setIsSettingsOpen, isSoundEnabled, toggleSound } = useChatStore();
 
   const [fullName, setFullName] = useState(authUser?.fullName || "");
-  const [selectedImg, setSelectedImg] = useState(null);
+  // Preview uses an object URL — not base64
+  const [previewUrl, setPreviewUrl] = useState(null);
+  const [pendingFile, setPendingFile] = useState(null);
+  const [uploadProgress, setUploadProgress] = useState(null);
+  const [isUploading, setIsUploading] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
 
   const fileInputRef = useRef(null);
+  const previewUrlRef = useRef(null);
 
   if (!isSettingsOpen) return null;
 
@@ -37,12 +43,19 @@ function SettingsModal() {
       toast.error("Please select an image file");
       return;
     }
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error("Profile picture must be smaller than 10 MB");
+      return;
+    }
 
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onloadend = () => {
-      setSelectedImg(reader.result);
-    };
+    // Revoke old preview to free memory
+    if (previewUrlRef.current) {
+      URL.revokeObjectURL(previewUrlRef.current);
+    }
+    const objectUrl = URL.createObjectURL(file);
+    previewUrlRef.current = objectUrl;
+    setPreviewUrl(objectUrl);
+    setPendingFile(file);
   };
 
   const handleSaveProfile = async (e) => {
@@ -58,8 +71,28 @@ function SettingsModal() {
       if (fullName.trim() !== authUser.fullName) {
         updateData.fullName = fullName.trim();
       }
-      if (selectedImg) {
-        updateData.profilePic = selectedImg;
+
+      if (pendingFile) {
+        // Upload directly to Cloudinary with progress tracking
+        setIsUploading(true);
+        setUploadProgress(0);
+        try {
+          const cloudinaryUrl = await uploadToCloudinary(
+            pendingFile,
+            "profile",
+            (p) => setUploadProgress(p)
+          );
+          updateData.profilePic = cloudinaryUrl;
+        } catch (err) {
+          toast.error(err.message || "Profile picture upload failed");
+          setIsUpdating(false);
+          setIsUploading(false);
+          setUploadProgress(null);
+          return;
+        } finally {
+          setIsUploading(false);
+          setUploadProgress(null);
+        }
       }
 
       if (Object.keys(updateData).length === 0) {
@@ -69,7 +102,13 @@ function SettingsModal() {
       }
 
       await updateProfile(updateData);
-      setSelectedImg(null);
+      // Clean up preview
+      if (previewUrlRef.current) {
+        URL.revokeObjectURL(previewUrlRef.current);
+        previewUrlRef.current = null;
+      }
+      setPreviewUrl(null);
+      setPendingFile(null);
     } catch (error) {
       console.log("Error updating profile:", error);
     } finally {
@@ -105,14 +144,21 @@ function SettingsModal() {
             <div className="flex flex-col items-center justify-center py-2 space-y-3">
               <div className="relative group">
                 <img
-                  src={selectedImg || authUser?.profilePic || "/avatar.png"}
+                  src={previewUrl || authUser?.profilePic || "/avatar.png"}
                   alt="Profile"
                   className="size-24 rounded-full object-cover border-2 border-cyan-500/40 shadow-md"
                 />
+                {/* Upload progress overlay on avatar */}
+                {isUploading && (
+                  <div className="absolute inset-0 rounded-full bg-slate-900/70 flex items-center justify-center">
+                    <span className="text-xs font-bold text-cyan-400">{uploadProgress ?? 0}%</span>
+                  </div>
+                )}
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  className="absolute bottom-0 right-0 p-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-full shadow-lg transition-transform group-hover:scale-105"
+                  disabled={isUploading || isUpdating}
+                  className="absolute bottom-0 right-0 p-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-full shadow-lg transition-transform group-hover:scale-105 disabled:opacity-50"
                 >
                   <CameraIcon className="size-4" />
                 </button>
@@ -124,7 +170,20 @@ function SettingsModal() {
                   className="hidden"
                 />
               </div>
-              <p className="text-xs text-slate-400">Click camera icon to change avatar</p>
+              {/* Progress bar for profile pic upload */}
+              {isUploading ? (
+                <div className="w-full max-w-[180px] space-y-1">
+                  <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-r from-cyan-500 to-cyan-400 rounded-full transition-all duration-200"
+                      style={{ width: `${uploadProgress ?? 0}%` }}
+                    />
+                  </div>
+                  <p className="text-[10px] text-center text-cyan-400">Uploading {uploadProgress ?? 0}%…</p>
+                </div>
+              ) : (
+                <p className="text-xs text-slate-400">Click camera icon to change avatar</p>
+              )}
             </div>
 
             {/* EDIT FULL NAME & EMAIL FORM */}
@@ -162,10 +221,10 @@ function SettingsModal() {
 
               <button
                 type="submit"
-                disabled={isUpdating}
+                disabled={isUpdating || isUploading}
                 className="w-full flex items-center justify-center space-x-2 bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-white py-2.5 rounded-xl font-medium text-sm transition-all disabled:opacity-50"
               >
-                {isUpdating ? (
+                {isUpdating || isUploading ? (
                   <LoaderIcon className="size-4 animate-spin" />
                 ) : (
                   <>
