@@ -147,22 +147,27 @@ export const getAllChats = async (req, res) => {
 
     // Step 4: For each conversation, figure out which participant is the
     //         "other" user (not the logged-in user) and attach useful metadata.
-    const formattedConversations = conversations.map((conv) => {
-      const otherUser = conv.participants.find(
-        (p) => p._id.toString() !== loggedInUserId.toString(),
-      );
+    const formattedConversations = conversations
+      .map((conv) => {
+        const otherUser = conv.participants.find(
+          (p) => p && p._id && p._id.toString() !== loggedInUserId.toString(),
+        );
 
-      return {
-        // Spread the other user's fields (id, fullName, profilePic, etc.)
-        ...otherUser.toObject(),
-        // Attach conversation-level metadata that the client needs
-        conversationId: conv._id,
-        lastMessageText: conv.lastMessageText,
-        lastMessageAt: conv.lastMessageAt,
-        // How many unread messages does the logged-in user have in this chat?
-        unreadCount: conv.unreadCount?.get(loggedInUserId.toString()) || 0,
-      };
-    });
+        if (!otherUser) return null;
+
+        return {
+          // Spread the other user's fields (fullName, profilePic, email, etc.)
+          ...otherUser.toObject(),
+          _id: otherUser._id.toString(),
+          // Attach conversation-level metadata that the client needs
+          conversationId: conv._id.toString(),
+          lastMessageText: conv.lastMessageText,
+          lastMessageAt: conv.lastMessageAt,
+          // How many unread messages does the logged-in user have in this chat?
+          unreadCount: conv.unreadCount?.get(loggedInUserId.toString()) || 0,
+        };
+      })
+      .filter(Boolean);
 
     res.status(200).json(formattedConversations);
   } catch (error) {
@@ -298,35 +303,29 @@ export const sendMessage = async (req, res) => {
     }
 
     // ── Step 1: Save the message ──────────────────────────────────────────
-    // status defaults to "sent" automatically via the schema default.
     const newMessage = new Message({
       senderId,
       receiverId,
       text,
       image: imageUrl,
-      // status: "sent"  ← already the default, no need to set explicitly
+      // status: "sent" is default in schema
     });
 
     await newMessage.save();
 
-    // ── Step 2: Keep Conversation in sync ─────────────────────────────────
-    // This is the Phase 1 addition. upsertConversation() either:
-    //   - Creates a new Conversation doc (first message between these users)
-    //   - Updates the existing one (subsequent messages)
-    // It updates: lastMessage ref, lastMessageText preview, lastMessageAt,
-    //             and increments the receiver's unreadCount by 1.
-    await upsertConversation(newMessage);
+    // ── Step 2: Instant Real-time delivery ──────────────────────────────────
+    // Deliver immediately to ALL active tabs of the receiver via their room.
+    // Zero latency: does not wait for conversation upsert!
+    io.to(String(receiverId)).emit("newMessage", newMessage);
 
-    // ── Step 3: Real-time delivery ────────────────────────────────────────
-    // If the receiver is currently connected, push the message to their socket.
-    // The message already has status="sent"; Phase 2 will send back an ACK to
-    // upgrade it to "delivered" when the client confirms receipt.
-    const receiverSocketId = getReceiverSocketId(receiverId);
-    if (receiverSocketId) {
-      io.to(receiverSocketId).emit("newMessage", newMessage);
-    }
-
+    // ── Step 3: Immediate HTTP response to sender ──────────────────────────
     res.status(201).json(newMessage);
+
+    // ── Step 4: Asynchronous Conversation Sync ─────────────────────────────
+    // Run in background without blocking the HTTP response or socket emission.
+    upsertConversation(newMessage).catch((err) =>
+      console.error("Async upsertConversation error:", err.message)
+    );
   } catch (error) {
     console.log("Error sending message:", error);
     res.status(500).json({ message: "Server Error" });

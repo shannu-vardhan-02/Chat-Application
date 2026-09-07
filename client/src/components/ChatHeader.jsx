@@ -60,14 +60,17 @@ function formatLastSeen(lastSeen) {
 function ChatHeader() {
   const { selectedUser, setSelectedUser, typingUsers } = useChatStore();
   const { onlineUsers } = useAuthStore();
-  const isOnline = onlineUsers.includes(selectedUser._id);
+  const isOnline = Boolean(selectedUser?._id && onlineUsers.includes(String(selectedUser._id)));
 
   /**
    * Phase 2: Is the selected user currently typing?
    * We check typingUsers[selectedUser._id] from the store, which is set
    * by the "typing" / "stopTyping" socket events in subscribeToMessages().
    */
-  const isTyping = typingUsers[selectedUser._id] === true;
+  const isTyping = Boolean(
+    selectedUser?._id &&
+      (typingUsers[selectedUser._id] === true || typingUsers[String(selectedUser._id)] === true)
+  );
 
   // Escape key closes the chat
   useEffect(() => {

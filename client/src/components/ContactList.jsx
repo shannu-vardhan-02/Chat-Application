@@ -45,8 +45,8 @@ function ContactList() {
   return (
     <div className="space-y-0.5">
       {filteredContacts.map((contact) => {
-        const isOnline   = onlineUsers.includes(contact._id);
-        const isSelected = selectedUser?._id === contact._id;
+        const isOnline   = onlineUsers.includes(String(contact._id));
+        const isSelected = selectedUser?._id && String(selectedUser._id) === String(contact._id);
         return (
           <div
             key={contact._id}

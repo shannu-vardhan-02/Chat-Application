@@ -207,9 +207,29 @@ export const useChatStore = create((set, get) => ({
         };
       });
 
-      // Also refresh the chats sidebar so lastMessageText updates immediately
-      // for the current conversation (the server just upserted the Conversation).
-      get().getMyChatPartners();
+      // Optimistically update the sidebar `chats` state locally (zero network overhead)
+      set((state) => {
+        const preview = messageData.text ? messageData.text.slice(0, 60) : "[Photo]";
+        const existingChatIndex = state.chats.findIndex((c) => c._id === selectedUser._id);
+
+        if (existingChatIndex !== -1) {
+          const updatedChat = {
+            ...state.chats[existingChatIndex],
+            lastMessageText: preview,
+            lastMessageAt: new Date().toISOString(),
+          };
+          const remainingChats = state.chats.filter((_, idx) => idx !== existingChatIndex);
+          return { chats: [updatedChat, ...remainingChats] };
+        } else {
+          const newChatEntry = {
+            ...selectedUser,
+            lastMessageText: preview,
+            lastMessageAt: new Date().toISOString(),
+            unreadCount: 0,
+          };
+          return { chats: [newChatEntry, ...state.chats] };
+        }
+      });
     } catch (error) {
       // Revert optimistic update on failure
       set((state) => ({ messages: state.messages.filter((m) => m._id !== tempId) }));
@@ -285,8 +305,26 @@ export const useChatStore = create((set, get) => ({
           notificationSound.play().catch(() => {});
         }
       } else {
-        // Message from a background contact — refresh sidebar
-        get().getMyChatPartners();
+        // Message from a background contact — update sidebar locally without network call
+        set((state) => {
+          const preview = newMessage.text ? newMessage.text.slice(0, 60) : "[Photo]";
+          const existingChatIndex = state.chats.findIndex((c) => c._id === newMessage.senderId);
+
+          if (existingChatIndex !== -1) {
+            const updatedChat = {
+              ...state.chats[existingChatIndex],
+              lastMessageText: preview,
+              lastMessageAt: newMessage.createdAt || new Date().toISOString(),
+              unreadCount: (state.chats[existingChatIndex].unreadCount || 0) + 1,
+            };
+            const remainingChats = state.chats.filter((_, idx) => idx !== existingChatIndex);
+            return { chats: [updatedChat, ...remainingChats] };
+          } else {
+            // New chat partner sent message — fetch chat list once
+            get().getMyChatPartners();
+            return {};
+          }
+        });
 
         if (isSoundEnabled) {
           const notificationSound = new Audio("/sounds/notification.mp3");

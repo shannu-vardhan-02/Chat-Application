@@ -91,23 +91,46 @@ export const useAuthStore = create((set, get) => ({
 
   // Open a Socket.IO connection using the JWT cookie for auth
   connectSocket: () => {
-    const { authUser } = get();
-    if (!authUser || get().socket?.connected) return;
+    const { authUser, socket: existingSocket } = get();
+    if (!authUser) return;
+    if (existingSocket?.connected) return;
+
+    // Disconnect stale socket instance if any
+    if (existingSocket) {
+      existingSocket.disconnect();
+    }
 
     const socket = io(BASE_URL, {
-      withCredentials: true, // this ensures cookies are sent with the connection
+      withCredentials: true,
+      autoConnect: false,
+    });
+
+    // Listen for online users broadcast BEFORE connect so initial sync is never missed
+    socket.on("getOnlineUsers", (userIds) => {
+      set({ onlineUsers: (userIds || []).map(String) });
+    });
+
+    socket.on("connect", () => {
+      if (import.meta.env.MODE === "development") {
+        console.log("[SOCKET] Connected:", socket.id);
+      }
+    });
+
+    socket.on("disconnect", (reason) => {
+      if (import.meta.env.MODE === "development") {
+        console.log("[SOCKET] Disconnected:", reason);
+      }
     });
 
     socket.connect();
     set({ socket });
-
-    // Listen for online users broadcast from server
-    socket.on("getOnlineUsers", (userIds) => {
-      set({ onlineUsers: userIds });
-    });
   },
 
   disconnectSocket: () => {
-    if (get().socket?.connected) get().socket.disconnect();
+    const { socket } = get();
+    if (socket) {
+      socket.disconnect();
+      set({ socket: null, onlineUsers: [] });
+    }
   },
 }));

@@ -111,8 +111,8 @@ function ChatsList() {
   return (
     <div className="space-y-0.5">
       {filteredChats.map((chat) => {
-        const isOnline   = onlineUsers.includes(chat._id);
-        const isSelected = selectedUser?._id === chat._id;
+        const isOnline   = onlineUsers.includes(String(chat._id));
+        const isSelected = selectedUser?._id && String(selectedUser._id) === String(chat._id);
         const isConfirm  = deletingId === chat._id;
 
         // Phase 1: last message preview + timestamp from Conversation doc
