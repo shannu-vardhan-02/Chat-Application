@@ -1,6 +1,7 @@
 import { useRef, useState, useCallback } from "react";
 import useKeyboardSound from "../hooks/useKeyboardSound";
 import { useChatStore } from "../store/useChatStore";
+import { useAuthStore } from "../store/useAuthStore";
 import toast from "react-hot-toast";
 import { ImageIcon, SendIcon, XIcon } from "lucide-react";
 import BorderAnimatedContainer from "./BorderAnimatedContainer";
@@ -23,13 +24,47 @@ function MessageInput() {
   const inputRef = useRef(null);
   const previewUrlRef = useRef(null); // keep track to revoke
 
-  const { sendMessage, isSoundEnabled } = useChatStore();
+  /**
+   * Phase 2: Typing indicator timer.
+   * We use a ref (not state) so the timer ID doesn't trigger re-renders.
+   * Strategy:
+   *   - On every keystroke → emit "typing" + reset a 1.5s timer
+   *   - When timer fires → emit "stopTyping"
+   *   - On message send → immediately emit "stopTyping" and clear timer
+   */
+  const stopTypingTimer = useRef(null);
+
+  const { sendMessage, isSoundEnabled, selectedUser } = useChatStore();
+  const { socket } = useAuthStore();
+
+  // Emit "typing" immediately and schedule "stopTyping" after 1.5s of silence
+  const emitTyping = useCallback(() => {
+    if (!socket || !selectedUser) return;
+    socket.emit("typing", { receiverId: selectedUser._id });
+
+    // Clear any existing timer so we don't send stopTyping prematurely
+    clearTimeout(stopTypingTimer.current);
+    stopTypingTimer.current = setTimeout(() => {
+      socket.emit("stopTyping", { receiverId: selectedUser._id });
+    }, 1500);
+  }, [socket, selectedUser]);
+
+  // Immediately emit "stopTyping" and clear pending timer
+  const emitStopTyping = useCallback(() => {
+    if (!socket || !selectedUser) return;
+    clearTimeout(stopTypingTimer.current);
+    socket.emit("stopTyping", { receiverId: selectedUser._id });
+  }, [socket, selectedUser]);
+
 
   const handleSendMessage = useCallback(
     async (e) => {
       e?.preventDefault();
       if ((!text.trim() && !pendingFile) || isUploading) return;
       if (isSoundEnabled) playRandomKeyStrokeSound();
+
+      // Phase 2: stop typing indicator immediately when message is sent
+      emitStopTyping();
 
       let imageUrl = null;
 
@@ -64,8 +99,9 @@ function MessageInput() {
       if (fileInputRef.current) fileInputRef.current.value = "";
       setTimeout(() => inputRef.current?.focus(), 0);
     },
-    [text, pendingFile, isUploading, isSoundEnabled, playRandomKeyStrokeSound, sendMessage]
+    [text, pendingFile, isUploading, isSoundEnabled, playRandomKeyStrokeSound, sendMessage, emitStopTyping]
   );
+
 
   // Enter = send
   const handleKeyDown = (e) => {
@@ -206,12 +242,15 @@ function MessageInput() {
             onChange={(e) => {
               setText(e.target.value);
               if (isSoundEnabled) playRandomKeyStrokeSound();
+              // Phase 2: tell the receiver we're typing (debounced)
+              emitTyping();
             }}
             onKeyDown={handleKeyDown}
             disabled={isUploading}
             className="flex-1 bg-transparent border-none focus:outline-none focus:ring-0 text-slate-200 placeholder-slate-500 text-sm py-1.5 disabled:opacity-50"
             placeholder={isUploading ? "Uploading image…" : "Type a message…"}
           />
+
 
           {/* Send button */}
           <button

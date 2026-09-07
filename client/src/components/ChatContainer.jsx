@@ -6,6 +6,7 @@ import NoChatHistoryPlaceholder from "./NoChatHistoryPlaceholder";
 import MessageInput from "./MessageInput";
 import MessagesLoadingSkeleton from "./MessagesLoadingSkeleton";
 import ImageLightbox from "./ImageLightbox";
+import { Check, CheckCheck, Clock } from "lucide-react";
 
 // Format timestamp: show time for today, date+time for older messages
 function formatTime(dateStr) {
@@ -39,6 +40,35 @@ function groupMessages(messages) {
   });
   return groups;
 }
+
+/**
+ * MessageStatusIcon — renders the ✓ tick for outgoing messages.
+ *
+ * Status lifecycle (matches the server schema):
+ *   "sending"   → Clock icon (grey)  — optimistic, not yet saved to DB
+ *   "sent"      → Single ✓ (grey)    — saved to DB, receiver not yet notified
+ *   "delivered" → Double ✓✓ (grey)  — receiver's device got it (Phase 2)
+ *   "read"      → Double ✓✓ (cyan)  — receiver opened the chat (Phase 2)
+ *
+ * We only render this for sent messages (isSent = true).
+ * The icon is intentionally tiny (size-3) to stay subtle.
+ */
+function MessageStatusIcon({ status }) {
+  if (status === "sending") {
+    return <Clock className="size-3 text-slate-400/70 inline-block ml-1" />;
+  }
+  if (status === "sent") {
+    return <Check className="size-3 text-slate-400/70 inline-block ml-1" />;
+  }
+  if (status === "delivered") {
+    return <CheckCheck className="size-3 text-slate-400/70 inline-block ml-1" />;
+  }
+  if (status === "read") {
+    return <CheckCheck className="size-3 text-cyan-400 inline-block ml-1" />;
+  }
+  return null;
+}
+
 
 /**
  * Renders a chat image with a loading skeleton/blur-up effect.
@@ -79,14 +109,36 @@ function ChatContainer() {
   const {
     selectedUser,
     getMessagesByUserId,
+    loadMoreMessages,
     messages,
     isMessagesLoading,
+    isLoadingMoreMessages,
+    hasMoreMessages,
     subscribeToMessages,
     unsubscribeFromMessages,
   } = useChatStore();
-  const { authUser } = useAuthStore();
-  const messageEndRef = useRef(null);
-  const prevLengthRef = useRef(0);
+  const { authUser, socket } = useAuthStore();
+
+  const messageEndRef = useRef(null);   // anchor at the bottom for auto-scroll
+  const scrollRef     = useRef(null);   // ref to the scroll container div
+  const prevLengthRef = useRef(0);      // tracks message count for scroll decisions
+
+  /**
+   * Scroll anchor — saves scroll state BEFORE a "load more" prepend happens.
+   *
+   * Why do we need this?
+   *   When we prepend older messages at the TOP of the list, the browser's
+   *   default behavior is to keep scrollTop fixed — which means the viewport
+   *   jumps up to show the new messages instead of staying where the user was.
+   *
+   *   We save the scroll container's scrollHeight BEFORE the state update.
+   *   Then in the messages useEffect, we restore:
+   *     scrollTop = newScrollHeight - savedScrollHeight
+   *   This keeps the viewport anchored to the same message.
+   *
+   * Format: { scrollHeight, scrollTop } | null
+   */
+  const scrollAnchorRef = useRef(null);
 
   // Lightbox state
   const [lightboxSrc, setLightboxSrc] = useState(null);
@@ -97,13 +149,69 @@ function ChatContainer() {
     return () => unsubscribeFromMessages();
   }, [selectedUser, getMessagesByUserId, subscribeToMessages, unsubscribeFromMessages]);
 
-  // Scroll: instant jump on load, smooth scroll only for new messages
+  // Phase 2: Mark messages as read when chat opens or new messages arrive
   useEffect(() => {
-    if (!messageEndRef.current) return;
+    if (!socket || !selectedUser || messages.length === 0) return;
+    const hasUnread = messages.some(
+      (m) => m.senderId === selectedUser._id && m.status !== "read",
+    );
+    if (hasUnread) {
+      socket.emit("markRead", { senderId: selectedUser._id });
+    }
+  }, [socket, selectedUser, messages]);
+
+  /**
+   * Scroll behaviour — runs every time `messages` changes.
+   *
+   * Three cases:
+   *   1. Initial load (prevLength was 0): instant jump to bottom
+   *   2. New message appended (length grew): smooth scroll to bottom
+   *   3. Older messages prepended (scrollAnchorRef is set): restore position
+   *      using the scroll anchor technique
+   */
+  useEffect(() => {
+    if (!scrollRef.current || !messageEndRef.current) return;
+
+    // Case 3: restoring position after "load more" prepend
+    if (scrollAnchorRef.current) {
+      const { scrollHeight: savedHeight } = scrollAnchorRef.current;
+      const newScrollHeight = scrollRef.current.scrollHeight;
+      // Pin the viewport: new scrollTop = how much height was added
+      scrollRef.current.scrollTop = newScrollHeight - savedHeight;
+      scrollAnchorRef.current = null;
+      prevLengthRef.current = messages.length;
+      return;
+    }
+
+    // Case 1 & 2: auto-scroll to bottom
     const isNew = messages.length > prevLengthRef.current && prevLengthRef.current !== 0;
     messageEndRef.current.scrollIntoView({ behavior: isNew ? "smooth" : "instant" });
     prevLengthRef.current = messages.length;
   }, [messages]);
+
+  /**
+   * Scroll-to-top detection — triggers "load more".
+   *
+   * We attach an onScroll handler to the scroll container. When the user
+   * scrolls to within 80px of the top, we:
+   *   1. Save the current scrollHeight (scroll anchor)
+   *   2. Call loadMoreMessages — which prepends older messages to the list
+   *   3. The messages useEffect then restores the viewport position
+   *
+   * Why 80px threshold and not exactly 0?
+   *   A small threshold feels more responsive — the user doesn't have to
+   *   physically hit the very top before more messages load.
+   */
+  const handleScroll = () => {
+    if (!scrollRef.current) return;
+    if (scrollRef.current.scrollTop <= 80 && hasMoreMessages && !isLoadingMoreMessages) {
+      // Save scroll anchor BEFORE the state update causes a re-render
+      scrollAnchorRef.current = {
+        scrollHeight: scrollRef.current.scrollHeight,
+      };
+      loadMoreMessages(selectedUser._id);
+    }
+  };
 
   if (isMessagesLoading) {
     return (
@@ -125,9 +233,36 @@ function ChatContainer() {
 
       {/* Messages area */}
       <div
+        ref={scrollRef}
+        onScroll={handleScroll}
         className="flex-1 overflow-y-auto py-4 px-2 sm:px-4 md:px-6"
         style={{ backgroundImage: "radial-gradient(circle at 1px 1px, rgba(148,163,184,0.03) 1px, transparent 0)", backgroundSize: "28px 28px" }}
       >
+        {/* ── Load-more top area ──────────────────────────────────────────── */}
+        {isLoadingMoreMessages && (
+          /**
+           * Spinner shown while older messages are being fetched.
+           * Appears at the very top of the scroll container.
+           * The `sticky top-0` keeps it visible as long as the user is
+           * near the top, without blocking the rest of the content.
+           */
+          <div className="flex justify-center py-3 sticky top-0 z-10">
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-800/90 backdrop-blur-sm text-xs text-slate-400">
+              <span className="size-3 rounded-full border-2 border-slate-500 border-t-cyan-400 animate-spin" />
+              Loading older messages…
+            </div>
+          </div>
+        )}
+
+        {/* "You've reached the beginning" end-cap — only when no more to load */}
+        {!hasMoreMessages && messages.length > 0 && (
+          <div className="flex justify-center py-4">
+            <span className="text-[10px] text-slate-600 px-3 py-1 rounded-full bg-slate-800/40">
+              Beginning of conversation
+            </span>
+          </div>
+        )}
+
         {messages.length === 0 ? (
           <NoChatHistoryPlaceholder name={selectedUser.fullName} />
         ) : (
@@ -183,11 +318,12 @@ function ChatContainer() {
                         {msg.text && (
                           <p className="whitespace-pre-wrap break-words">{msg.text}</p>
                         )}
-                        {/* Timestamp — only on last msg of a group */}
+                        {/* Timestamp + status tick — only on last msg of a group */}
                         {isLast && (
-                          <p className={`text-[10px] mt-1 select-none ${isSent ? "text-cyan-200/60 text-right" : "text-slate-400/70"}`}>
+                          <p className={`text-[10px] mt-1 select-none flex items-center gap-0.5 ${isSent ? "text-cyan-200/60 justify-end" : "text-slate-400/70"}`}>
                             {formatTime(msg.createdAt)}
-                            {msg.isOptimistic && " · Sending…"}
+                            {/* Status tick — only rendered for outgoing messages */}
+                            {isSent && <MessageStatusIcon status={msg.status} />}
                           </p>
                         )}
                       </div>
@@ -196,7 +332,7 @@ function ChatContainer() {
                 );
               });
             })}
-            {/* Scroll anchor */}
+            {/* Scroll anchor — auto-scroll to this on new messages */}
             <div ref={messageEndRef} />
           </div>
         )}
@@ -217,3 +353,4 @@ function ChatContainer() {
 }
 
 export default ChatContainer;
+

@@ -5,6 +5,61 @@ import NoChatsFound from "./NoChatsFound";
 import { useAuthStore } from "../store/useAuthStore";
 import { Trash2Icon } from "lucide-react";
 
+/**
+ * Formats a timestamp into a short relative label for the sidebar.
+ *
+ * Why do we do this here and not in the store?
+ *   Because this is pure display logic — "2m ago", "Yesterday", "Mon" are
+ *   only relevant in the UI, not in state management.
+ *
+ * Examples:
+ *   < 1 min ago  → "Just now"
+ *   < 60 min     → "5m"
+ *   today        → "14:32"
+ *   yesterday    → "Yesterday"
+ *   this week    → "Mon"
+ *   older        → "12 Jan"
+ */
+function formatSidebarTime(dateStr) {
+  if (!dateStr) return "";
+  const date = new Date(dateStr);
+  const now = new Date();
+
+  const diffMs = now - date;
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+
+  if (diffMins < 1) return "Just now";
+  if (diffMins < 60) return `${diffMins}m`;
+
+  const isToday =
+    date.getDate() === now.getDate() &&
+    date.getMonth() === now.getMonth() &&
+    date.getFullYear() === now.getFullYear();
+  if (isToday) {
+    return date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  }
+
+  // Yesterday
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (
+    date.getDate() === yesterday.getDate() &&
+    date.getMonth() === yesterday.getMonth() &&
+    date.getFullYear() === yesterday.getFullYear()
+  ) {
+    return "Yesterday";
+  }
+
+  // Within last 7 days → show day name
+  if (diffHours < 7 * 24) {
+    return date.toLocaleDateString(undefined, { weekday: "short" });
+  }
+
+  // Older → show date
+  return date.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+}
+
 function ChatsList() {
   const {
     getMyChatPartners,
@@ -60,6 +115,12 @@ function ChatsList() {
         const isSelected = selectedUser?._id === chat._id;
         const isConfirm  = deletingId === chat._id;
 
+        // Phase 1: last message preview + timestamp from Conversation doc
+        const preview   = chat.lastMessageText || "";
+        const timeLabel = formatSidebarTime(chat.lastMessageAt);
+        // Unread badge count (Phase 1 data, badge UI added here too)
+        const unread    = chat.unreadCount || 0;
+
         return (
           <div
             key={chat._id}
@@ -91,9 +152,10 @@ function ChatsList() {
               />
             </div>
 
-            {/* Info */}
+            {/* Info — Phase 1: show last message preview and timestamp */}
             <div className="min-w-0 flex-1">
-              <div className="flex items-center justify-between">
+              {/* Row 1: name + time */}
+              <div className="flex items-center justify-between gap-1">
                 <h4
                   className={`font-medium text-sm truncate transition-colors ${
                     isSelected ? "text-cyan-400" : "text-slate-200"
@@ -101,15 +163,33 @@ function ChatsList() {
                 >
                   {chat.fullName}
                 </h4>
-                {isOnline && !isConfirm && (
-                  <span className="text-[10px] text-emerald-400 font-medium flex-shrink-0 ml-1">
-                    Online
+                {/* Timestamp — hidden when delete confirm is showing */}
+                {!isConfirm && timeLabel && (
+                  <span className="text-[10px] text-slate-500 flex-shrink-0 ml-1">
+                    {timeLabel}
                   </span>
                 )}
               </div>
-              <p className="text-xs text-slate-500 truncate mt-0.5">
-                {isOnline ? "Active now" : "Tap to chat"}
-              </p>
+
+              {/* Row 2: last message preview + optional unread badge */}
+              <div className="flex items-center justify-between gap-1 mt-0.5">
+                {preview ? (
+                  <p className="text-xs text-slate-500 truncate leading-snug">
+                    {preview}
+                  </p>
+                ) : (
+                  <p className="text-xs text-slate-600 truncate italic">
+                    {isOnline ? "Active now" : "Tap to chat"}
+                  </p>
+                )}
+
+                {/* Unread badge — only show if > 0 and not the selected chat */}
+                {unread > 0 && !isSelected && (
+                  <span className="flex-shrink-0 min-w-[18px] h-[18px] px-1 rounded-full bg-cyan-500 text-white text-[10px] font-bold flex items-center justify-center">
+                    {unread > 99 ? "99+" : unread}
+                  </span>
+                )}
+              </div>
             </div>
 
             {/* Delete button — shown on hover OR in confirm state */}

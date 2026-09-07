@@ -1,5 +1,20 @@
 import mongoose from "mongoose";
 
+/**
+ * User Model
+ * ----------
+ * Phase 2 adds the `lastSeen` field.
+ *
+ * lastSeen:
+ *   Stored as a Date. Updated every time the user's Socket.IO connection
+ *   drops (i.e. they close the tab / go offline). When the user is online
+ *   we show the green dot; when offline we show "last seen X ago" using
+ *   this field.
+ *
+ *   Why NOT store "online: Boolean"?
+ *   - A boolean goes stale if the server crashes (no disconnect event fires).
+ *   - A timestamp lets us compute "last seen 5 min ago" for better UX.
+ */
 const userSchema = new mongoose.Schema(
   {
     email: {
@@ -20,11 +35,18 @@ const userSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+
+    // Phase 2: updated to Date.now() on every socket disconnect
+    lastSeen: {
+      type: Date,
+      default: null,
+    },
   },
   {
-    timestamps: true, // this will automatically add createdAt and updatedAt fields to the user document in the database which can be useful for tracking when a user was created or last updated
+    timestamps: true,
   },
 );
 
 const User = mongoose.model("User", userSchema);
 export default User;
+

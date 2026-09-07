@@ -9,10 +9,65 @@ import { useEffect } from "react";
 import { useAuthStore } from "../store/useAuthStore";
 import toast from "react-hot-toast";
 
+/**
+ * Formats a lastSeen Date into a human-readable "last seen X ago" string.
+ *
+ * Why we need this:
+ *   The server saves user.lastSeen = new Date() on every socket disconnect.
+ *   When the user is offline, we display this instead of just "Offline" so
+ *   the other person knows roughly when they were last available.
+ *
+ * Examples:
+ *   Just now / a few seconds ago  → "last seen just now"
+ *   < 60 min                       → "last seen 5 min ago"
+ *   today                          → "last seen at 14:32"
+ *   yesterday                      → "last seen yesterday at 09:15"
+ *   older                          → "last seen on 5 Jan"
+ */
+function formatLastSeen(lastSeen) {
+  if (!lastSeen) return "Offline";
+
+  const date = new Date(lastSeen);
+  const now = new Date();
+  const diffMs = now - date;
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+
+  if (diffMins < 1) return "last seen just now";
+  if (diffMins < 60) return `last seen ${diffMins} min ago`;
+
+  const isToday =
+    date.getDate() === now.getDate() &&
+    date.getMonth() === now.getMonth() &&
+    date.getFullYear() === now.getFullYear();
+  if (isToday) {
+    return `last seen at ${date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
+  }
+
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (
+    date.getDate() === yesterday.getDate() &&
+    date.getMonth() === yesterday.getMonth() &&
+    date.getFullYear() === yesterday.getFullYear()
+  ) {
+    return `last seen yesterday at ${date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
+  }
+
+  return `last seen on ${date.toLocaleDateString(undefined, { day: "numeric", month: "short" })}`;
+}
+
 function ChatHeader() {
-  const { selectedUser, setSelectedUser } = useChatStore();
+  const { selectedUser, setSelectedUser, typingUsers } = useChatStore();
   const { onlineUsers } = useAuthStore();
   const isOnline = onlineUsers.includes(selectedUser._id);
+
+  /**
+   * Phase 2: Is the selected user currently typing?
+   * We check typingUsers[selectedUser._id] from the store, which is set
+   * by the "typing" / "stopTyping" socket events in subscribeToMessages().
+   */
+  const isTyping = typingUsers[selectedUser._id] === true;
 
   // Escape key closes the chat
   useEffect(() => {
@@ -51,19 +106,36 @@ function ChatHeader() {
           />
         </div>
 
-        {/* Name + status */}
+        {/* Name + status / typing indicator */}
         <div className="min-w-0">
           <h3 className="text-slate-100 font-semibold text-sm leading-tight truncate max-w-[150px] sm:max-w-[220px]">
             {selectedUser.fullName}
           </h3>
           <p className="text-[11px] font-medium leading-tight mt-0.5">
-            {isOnline ? (
+            {isTyping ? (
+              /**
+               * Typing indicator — shown when isTyping = true.
+               * The three animated dots are pure CSS using Tailwind's animate-bounce
+               * with staggered delay classes (delay-100, delay-200) to create a
+               * sequential bounce effect without any JS animation library.
+               */
+              <span className="text-cyan-400 flex items-center gap-1">
+                <span className="flex items-center gap-0.5">
+                  <span className="inline-block size-1.5 rounded-full bg-cyan-400 animate-bounce [animation-delay:-0.3s]" />
+                  <span className="inline-block size-1.5 rounded-full bg-cyan-400 animate-bounce [animation-delay:-0.15s]" />
+                  <span className="inline-block size-1.5 rounded-full bg-cyan-400 animate-bounce" />
+                </span>
+                typing…
+              </span>
+            ) : isOnline ? (
               <span className="text-emerald-400 flex items-center gap-1">
                 <span className="inline-block size-1.5 rounded-full bg-emerald-400 animate-pulse" />
                 Online
               </span>
             ) : (
-              <span className="text-slate-500">Offline</span>
+              <span className="text-slate-500">
+                {formatLastSeen(selectedUser.lastSeen)}
+              </span>
             )}
           </p>
         </div>
