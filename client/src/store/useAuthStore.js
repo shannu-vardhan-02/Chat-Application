@@ -107,23 +107,30 @@ export const useAuthStore = create((set, get) => ({
 
     // Listen for online users broadcast BEFORE connect so initial sync is never missed
     socket.on("getOnlineUsers", (userIds) => {
+      console.log("[SOCKET] Received online users:", userIds);
       set({ onlineUsers: (userIds || []).map(String) });
     });
 
     socket.on("connect", () => {
-      if (import.meta.env.MODE === "development") {
-        console.log("[SOCKET] Connected:", socket.id);
-      }
+      console.log("[SOCKET] Connected:", socket.id);
+      socket.emit("requestOnlineUsers");
+      // Initialize chat listeners upon connection and reconnection
+      import("./useChatStore").then(({ useChatStore }) => {
+        useChatStore.getState().initSocketListeners(socket);
+      });
     });
 
     socket.on("disconnect", (reason) => {
-      if (import.meta.env.MODE === "development") {
-        console.log("[SOCKET] Disconnected:", reason);
-      }
+      console.log("[SOCKET] Disconnected:", reason);
     });
 
     socket.connect();
     set({ socket });
+
+    // Also initialize immediately so listeners are ready
+    import("./useChatStore").then(({ useChatStore }) => {
+      useChatStore.getState().initSocketListeners(socket);
+    });
   },
 
   disconnectSocket: () => {

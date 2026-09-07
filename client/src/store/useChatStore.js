@@ -30,7 +30,23 @@ export const useChatStore = create((set, get) => ({
   },
 
   setActiveTab: (tab) => set({ activeTab: tab }),
-  setSelectedUser: (selectedUser) => set({ selectedUser }),
+  setSelectedUser: (selectedUser) => {
+    set({ selectedUser });
+    if (selectedUser) {
+      // Clear unread count for this user in sidebar
+      set((state) => ({
+        chats: state.chats.map((c) =>
+          String(c._id) === String(selectedUser._id) ? { ...c, unreadCount: 0 } : c
+        ),
+      }));
+
+      // Immediately emit markRead to server so sender gets cyan ticks in real time
+      const socket = useAuthStore.getState().socket;
+      if (socket?.connected) {
+        socket.emit("markRead", { senderId: selectedUser._id });
+      }
+    }
+  },
 
   getAllContacts: async () => {
     set({ isUsersLoading: true });
@@ -261,41 +277,50 @@ export const useChatStore = create((set, get) => ({
   },
 
   /**
-   * Listen for real-time incoming messages and status updates via Socket.IO.
+   * Initialize all chat socket listeners globally on the Socket.IO connection.
    *
-   * Phase 2 additions vs Phase 1:
-   *   1. "newMessage" → after appending, emit "messageDelivered" ACK back to server
-   *      so the sender's tick upgrades from ✓ → ✓✓ (grey)
-   *   2. "messageStatusUpdate" → a specific message's status changed
-   *      (e.g. sent → delivered). Update it in local state.
-   *   3. "messagesRead" → the OTHER person opened our chat and read all messages.
-   *      Bulk-upgrade all our sent messages to "read" (grey ✓✓ → cyan ✓✓).
-   *   4. "typing" / "stopTyping" → update typingUsers map in store
+   * Called as soon as the socket connects in useAuthStore (and on reconnects).
+   * Having listeners registered globally ensures:
+   *   1. Messages from any user arrive live even when the chat is not open
+   *   2. Delivered ACKs are emitted immediately on receipt
+   *   3. Read ACKs are emitted immediately when the chat is open
+   *   4. Tick marks (✓ -> ✓✓ -> cyan ✓✓) update live across both sender & receiver
    */
-  subscribeToMessages: () => {
-    const { selectedUser, isSoundEnabled } = get();
-    if (!selectedUser) return;
-
-    const socket = useAuthStore.getState().socket;
+  initSocketListeners: (socket) => {
     if (!socket) return;
 
-    // ── newMessage ────────────────────────────────────────────────────────────
+    // Remove any previously bound listeners to avoid duplicate events
+    socket.off("newMessage");
+    socket.off("messageStatusUpdate");
+    socket.off("messagesRead");
+    socket.off("typing");
+    socket.off("stopTyping");
+
+    // ── 1. newMessage ──────────────────────────────────────────────────────────
     socket.on("newMessage", (newMessage) => {
-      const isFromSelectedUser = newMessage.senderId === selectedUser._id;
+      const { selectedUser, isSoundEnabled } = get();
+      const isFromSelectedUser =
+        selectedUser && String(newMessage.senderId) === String(selectedUser._id);
 
       if (isFromSelectedUser) {
-        // Append to the current chat view
-        const currentMessages = get().messages;
-        const updated = [...currentMessages, newMessage];
-        set((state) => ({
-          messages: updated,
-          messageCache: { ...state.messageCache, [selectedUser._id]: updated },
-        }));
+        // Message is from the active chat — append to visible messages
+        set((state) => {
+          if (state.messages.some((m) => String(m._id) === String(newMessage._id))) return state;
+          const updated = [...state.messages, newMessage];
+          return {
+            messages: updated,
+            messageCache: { ...state.messageCache, [selectedUser._id]: updated },
+          };
+        });
 
-        // Phase 2: ACK delivery so sender's tick goes ✓ → ✓✓
-        // We tell the server "I (the receiver) got this message".
+        // 1. Immediately ACK delivery so sender gets ✓✓ (grey)
         socket.emit("messageDelivered", {
           messageId: newMessage._id,
+          senderId: newMessage.senderId,
+        });
+
+        // 2. Since chat is actively open, immediately ACK read so sender gets ✓✓ (cyan)
+        socket.emit("markRead", {
           senderId: newMessage.senderId,
         });
 
@@ -305,10 +330,19 @@ export const useChatStore = create((set, get) => ({
           notificationSound.play().catch(() => {});
         }
       } else {
-        // Message from a background contact — update sidebar locally without network call
+        // Message is from a background contact:
+        // 1. ACK delivery so sender gets ✓✓ (message reached device!)
+        socket.emit("messageDelivered", {
+          messageId: newMessage._id,
+          senderId: newMessage.senderId,
+        });
+
+        // 2. Update sidebar locally with preview, timestamp, and unread badge (+1)
         set((state) => {
           const preview = newMessage.text ? newMessage.text.slice(0, 60) : "[Photo]";
-          const existingChatIndex = state.chats.findIndex((c) => c._id === newMessage.senderId);
+          const existingChatIndex = state.chats.findIndex(
+            (c) => String(c._id) === String(newMessage.senderId)
+          );
 
           if (existingChatIndex !== -1) {
             const updatedChat = {
@@ -320,7 +354,7 @@ export const useChatStore = create((set, get) => ({
             const remainingChats = state.chats.filter((_, idx) => idx !== existingChatIndex);
             return { chats: [updatedChat, ...remainingChats] };
           } else {
-            // New chat partner sent message — fetch chat list once
+            // New user sent message — fetch chats list once
             get().getMyChatPartners();
             return {};
           }
@@ -334,23 +368,13 @@ export const useChatStore = create((set, get) => ({
       }
     });
 
-    // ── messageStatusUpdate ───────────────────────────────────────────────────
-    /**
-     * Server sends this when a specific message's status changes.
-     * Example: receiver ACK'd delivery → our sent message goes "sent" → "delivered".
-     *
-     * We update the message in both `messages` (visible chat) and `messageCache`
-     * (so it's preserved when the user switches chats and comes back).
-     */
+    // ── 2. messageStatusUpdate (e.g. sent -> delivered) ────────────────────────
     socket.on("messageStatusUpdate", ({ messageId, status }) => {
       set((state) => {
-        // Helper to update a single message in an array
         const updateMsg = (msgs) =>
-          msgs.map((m) => (m._id === messageId ? { ...m, status } : m));
+          msgs.map((m) => (String(m._id) === String(messageId) ? { ...m, status } : m));
 
         const updatedMessages = updateMsg(state.messages);
-
-        // Also update cache for the selected user
         const selectedId = state.selectedUser?._id;
         const updatedCache = selectedId
           ? { ...state.messageCache, [selectedId]: updateMsg(state.messageCache[selectedId] || []) }
@@ -360,28 +384,19 @@ export const useChatStore = create((set, get) => ({
       });
     });
 
-    // ── messagesRead ──────────────────────────────────────────────────────────
-    /**
-     * Server sends this when the OTHER person opened our chat and read all messages.
-     * Bulk-upgrades ALL our sent messages in this conversation to "read".
-     * (grey ✓✓ → cyan ✓✓)
-     *
-     * We get { readBy, senderId } where:
-     *   readBy  = the person who read (the receiver / other user)
-     *   senderId = us (the original sender — we sent these messages)
-     */
+    // ── 3. messagesRead (e.g. receiver opened chat -> turn sent messages cyan) ──
     socket.on("messagesRead", ({ readBy, senderId }) => {
       const { authUser } = useAuthStore.getState();
-      // Only act if these are OUR messages being read by the current chat partner
-      if (senderId !== authUser._id) return;
-      if (readBy !== selectedUser._id) return;
+      if (!authUser) return;
 
       set((state) => {
         const updateMsg = (msgs) =>
           msgs.map((m) =>
-            m.senderId === authUser._id && m.status !== "read"
+            String(m.senderId) === String(authUser._id) &&
+            String(m.receiverId) === String(readBy) &&
+            m.status !== "read"
               ? { ...m, status: "read" }
-              : m,
+              : m
           );
 
         const updatedMessages = updateMsg(state.messages);
@@ -394,34 +409,30 @@ export const useChatStore = create((set, get) => ({
       });
     });
 
-    // ── typing / stopTyping ───────────────────────────────────────────────────
-    /**
-     * Server relays these events from the OTHER user typing in their input.
-     * We store typing state as a map { userId: true/false } so the ChatHeader
-     * can check if selectedUser._id is currently typing.
-     */
+    // ── 4. typing & stopTyping ─────────────────────────────────────────────────
     socket.on("typing", ({ senderId }) => {
       set((state) => ({
-        typingUsers: { ...state.typingUsers, [senderId]: true },
+        typingUsers: { ...state.typingUsers, [String(senderId)]: true },
       }));
     });
 
     socket.on("stopTyping", ({ senderId }) => {
       set((state) => ({
-        typingUsers: { ...state.typingUsers, [senderId]: false },
+        typingUsers: { ...state.typingUsers, [String(senderId)]: false },
       }));
     });
   },
 
-  unsubscribeFromMessages: () => {
+  // Backward compatibility: alias to initSocketListeners
+  subscribeToMessages: () => {
     const socket = useAuthStore.getState().socket;
     if (socket) {
-      socket.off("newMessage");
-      socket.off("messageStatusUpdate");
-      socket.off("messagesRead");
-      socket.off("typing");
-      socket.off("stopTyping");
+      get().initSocketListeners(socket);
     }
+  },
+
+  unsubscribeFromMessages: () => {
+    // Keep global listeners active; no-op to prevent tearing down listeners on chat navigation
   },
 }));
 

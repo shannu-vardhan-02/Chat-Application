@@ -99,6 +99,11 @@ io.on("connection", (socket) => {
     socket.broadcast.emit("getOnlineUsers", onlineList);
   }
 
+  // Allow client to actively request the latest online users list anytime
+  socket.on("requestOnlineUsers", () => {
+    socket.emit("getOnlineUsers", Array.from(userSockets.keys()));
+  });
+
   // ── Event: messageDelivered ─────────────────────────────────────────────────
   socket.on("messageDelivered", async ({ messageId, senderId }) => {
     try {

@@ -144,21 +144,21 @@ function ChatContainer() {
   const [lightboxSrc, setLightboxSrc] = useState(null);
 
   useEffect(() => {
-    getMessagesByUserId(selectedUser._id);
-    subscribeToMessages();
-    return () => unsubscribeFromMessages();
-  }, [selectedUser, getMessagesByUserId, subscribeToMessages, unsubscribeFromMessages]);
+    if (selectedUser?._id) {
+      getMessagesByUserId(selectedUser._id);
+    }
+  }, [selectedUser?._id, getMessagesByUserId]);
 
-  // Phase 2: Mark messages as read when chat opens or new messages arrive
+  // Mark unread messages as read when chat opens or new messages arrive
   useEffect(() => {
-    if (!socket || !selectedUser || messages.length === 0) return;
+    if (!socket?.connected || !selectedUser?._id || messages.length === 0) return;
     const hasUnread = messages.some(
-      (m) => m.senderId === selectedUser._id && m.status !== "read",
+      (m) => String(m.senderId) === String(selectedUser._id) && m.status !== "read"
     );
     if (hasUnread) {
       socket.emit("markRead", { senderId: selectedUser._id });
     }
-  }, [socket, selectedUser, messages]);
+  }, [socket, selectedUser?._id, messages]);
 
   /**
    * Scroll behaviour — runs every time `messages` changes.
