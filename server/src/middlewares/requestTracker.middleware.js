@@ -9,7 +9,7 @@ export const recentRequests = [];
  * ------------------------------------------------
  * Tracks every incoming HTTP request:
  *   1. Generates a unique requestId (e.g. req_8f2a1b)
- *   2. Attaches X-Request-Id and X-Response-Time headers to the response
+ *   2. Attaches X-Request-Id and X-Response-Time headers safely before headers are sent
  *   3. Logs incoming request start and completion with exact millisecond duration
  *   4. Emits a bold warning if any request takes longer than 400ms
  *   5. Keeps an in-memory buffer of recent requests for the /api/diagnostics endpoint
@@ -23,15 +23,34 @@ export const requestTracker = (req, res, next) => {
   const startTime = process.hrtime.bigint();
   const startTimestamp = new Date().toISOString();
 
+  // Attach X-Response-Time right before headers are sent (handles res.writeHead & res.send)
+  const setResponseTimeHeader = () => {
+    if (!res.headersSent) {
+      const endTime = process.hrtime.bigint();
+      const durationMs = Number((endTime - startTime) / 1000000n);
+      res.setHeader("X-Response-Time", `${durationMs.toFixed(2)}ms`);
+    }
+  };
+
+  const originalWriteHead = res.writeHead;
+  res.writeHead = function (...args) {
+    setResponseTimeHeader();
+    return originalWriteHead.apply(this, args);
+  };
+
+  const originalEnd = res.end;
+  res.end = function (...args) {
+    setResponseTimeHeader();
+    return originalEnd.apply(this, args);
+  };
+
   // Log incoming request
   console.log(`[REQ ->] ${req.method} ${req.originalUrl || req.url} (${reqId})`);
 
-  // Intercept response finish
+  // Intercept response completion for logging and metrics recording
   res.on("finish", () => {
     const endTime = process.hrtime.bigint();
     const durationMs = Number((endTime - startTime) / 1000000n);
-    res.setHeader("X-Response-Time", `${durationMs.toFixed(2)}ms`);
-
     const status = res.statusCode;
     const isSlow = durationMs > 400;
 
