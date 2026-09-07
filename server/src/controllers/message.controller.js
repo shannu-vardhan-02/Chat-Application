@@ -23,37 +23,74 @@ import { getReceiverSocketId, io } from "../lib/socket.js";
  * We use findOneAndUpdate with upsert: true so this is a single atomic DB
  * operation regardless of whether it's a new or existing conversation.
  */
+/**
+ * Upserts the Conversation document after a message is sent.
+ *
+ * ── Why the old findOneAndUpdate + $setOnInsert approach failed ──────────────
+ *
+ *   Original code used:
+ *     findOneAndUpdate(
+ *       { participants: { $all: [A, B] } },   ← filter with $all operator
+ *       { $setOnInsert: { participants: [A, B] } }  ← also sets participants
+ *     )
+ *
+ *   MongoDB error: "path 'participants' is matched twice"
+ *
+ *   WHY: When doing an upsert, MongoDB synthesises the insert document from
+ *   both the filter AND the update operators. Because $all is in the filter,
+ *   MongoDB tries to infer `participants` from it. $setOnInsert ALSO tries to
+ *   set `participants`. Two sources → conflict → error code 54.
+ *
+ * ── Fix: two-step find → update OR create ───────────────────────────────────
+ *
+ *   Step 1: findOne with $all (safe — read-only, no upsert inference)
+ *   Step 2a: updateOne by _id (no field inference issue — _id is unambiguous)
+ *   Step 2b: create() if no conversation exists yet (explicit, no inference)
+ *
+ *   Cost: one extra DB round-trip per message sent. At ≤1k users this is
+ *   negligible. Phase 4 (Redis) removes the need for this pattern entirely
+ *   by pre-caching conversation IDs.
+ */
 async function upsertConversation(message) {
-  const { senderId, receiverId, text, image, _id } = message;
+  const { senderId, receiverId, text, _id } = message;
 
   // Denormalized preview text for the sidebar (avoids a JOIN on every render)
   const preview = text ? text.slice(0, 60) : "[Photo]";
 
-  await Conversation.findOneAndUpdate(
-    // Match a conversation that has BOTH users as participants
-    {
-      participants: { $all: [senderId, receiverId] },
-    },
-    {
-      // Update the last-message metadata
+  // Step 1: Find any existing conversation between these two users
+  const existing = await Conversation.findOne({
+    participants: { $all: [senderId, receiverId] },
+  });
+
+  if (existing) {
+    // Step 2a: Conversation exists — update its last-message metadata
+    // We update by _id so there is NO field-inference ambiguity.
+    await Conversation.updateOne(
+      { _id: existing._id },
+      {
+        $set: {
+          lastMessage: _id,
+          lastMessageText: preview,
+          lastMessageAt: message.createdAt,
+        },
+        // Atomically increment the receiver's unread count.
+        // Map field update uses dot notation: "unreadCount.<userId>"
+        $inc: { [`unreadCount.${receiverId}`]: 1 },
+      },
+    );
+  } else {
+    // Step 2b: First message between these two users — create a Conversation.
+    // Explicit create() is clean and unambiguous — no upsert inference.
+    await Conversation.create({
+      participants: [senderId, receiverId],
       lastMessage: _id,
       lastMessageText: preview,
       lastMessageAt: message.createdAt,
-      // Atomically increment the receiver's unread count by 1.
-      // $inc on a Map field uses dot notation: "unreadCount.<key>"
-      $inc: { [`unreadCount.${receiverId}`]: 1 },
-
-      // On INSERT (upsert): also set the participants array
-      $setOnInsert: {
-        participants: [senderId, receiverId],
-      },
-    },
-    {
-      upsert: true,    // Create the doc if it doesn't exist
-      new: true,       // Return the updated/created document
-    },
-  );
+      unreadCount: new Map([[receiverId.toString(), 1]]),
+    });
+  }
 }
+
 
 // ─── Controllers ─────────────────────────────────────────────────────────────
 
