@@ -41,6 +41,37 @@ const userSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+
+    /**
+     * Phase F: Web Push subscriptions for this user.
+     *
+     * Each entry is a PushSubscription object from the browser:
+     * {
+     *   endpoint: "https://fcm.googleapis.com/fcm/send/...",
+     *   expirationTime: null,
+     *   keys: {
+     *     p256dh: "...",  // public key for payload encryption
+     *     auth: "..."     // authentication secret
+     *   }
+     * }
+     *
+     * WHY AN ARRAY: Users can have multiple devices (phone, laptop, tablet).
+     * Each device/browser has its own unique push subscription endpoint.
+     * We send a notification to ALL subscriptions on message receipt.
+     *
+     * EXPIRY: When a push delivery returns 410 (Gone) or 404, the subscription
+     * has expired and we remove it from this array.
+     *
+     * LIMIT: Capped at 10 subscriptions per user to prevent abuse.
+     */
+    pushSubscriptions: {
+      type: [mongoose.Schema.Types.Mixed],
+      default: [],
+      validate: {
+        validator: (arr) => arr.length <= 10,
+        message: "Too many push subscriptions (max 10 per user)",
+      },
+    },
   },
   {
     timestamps: true,

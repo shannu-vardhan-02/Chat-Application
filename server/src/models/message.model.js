@@ -42,14 +42,38 @@ const messageSchema = new mongoose.Schema(
       enum: ["sent", "delivered", "read"],
       default: "sent",
     },
+
+    /**
+     * Client-generated idempotency key (UUID v4).
+     *
+     * WHY: When a send request fails due to a network error, we can't know
+     * if the server processed it before the connection dropped. Without an
+     * idempotency key, retrying creates a duplicate message.
+     *
+     * HOW: The client generates clientId = crypto.randomUUID() BEFORE the
+     * HTTP request. On the server, if a message with the same clientId already
+     * exists, we return the existing message instead of creating a new one.
+     *
+     * SPARSE INDEX: Old messages (before this field existed) have no clientId.
+     * A sparse unique index only enforces uniqueness for documents that HAVE
+     * the field — documents without it are simply skipped by the index.
+     * This makes the migration fully backward-compatible.
+     */
+    clientId: {
+      type: String,
+      sparse: true, // ignore documents where clientId is absent
+    },
   },
   {
     timestamps: true,
   },
 );
 
-// Index to efficiently fetch all messages between two users
+// Index to efficiently fetch all messages between two users (cursor pagination)
 messageSchema.index({ senderId: 1, receiverId: 1, createdAt: 1 });
+
+// Sparse unique index for clientId — enforces idempotency without breaking old messages
+messageSchema.index({ clientId: 1 }, { unique: true, sparse: true });
 
 const Message = mongoose.model("Message", messageSchema);
 

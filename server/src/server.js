@@ -7,6 +7,7 @@ import authRoutes from "./routes/auth.routes.js";
 import messageRoutes from "./routes/message.routes.js";
 import uploadRoutes from "./routes/upload.routes.js";
 import diagnosticsRoutes from "./routes/diagnostics.routes.js";
+import pushRoutes from "./routes/push.routes.js";
 import { requestTracker } from "./middlewares/requestTracker.middleware.js";
 import { connectDB } from "./lib/db.js";
 import { ENV } from "./lib/env.js";
@@ -45,6 +46,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/messages", messageRoutes);
 app.use("/api/upload", uploadRoutes);
 app.use("/api/diagnostics", diagnosticsRoutes);
+app.use("/api/push", pushRoutes);
 
 // Deployment: serve static frontend if dist folder exists
 if (ENV.NODE_ENV === "production") {

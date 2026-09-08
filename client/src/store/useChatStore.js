@@ -2,6 +2,16 @@ import { create } from "zustand";
 import { axiosInstance } from "../lib/axios";
 import toast from "react-hot-toast";
 import { useAuthStore } from "./useAuthStore";
+import {
+  conversationKey,
+  getLocalMessages,
+  upsertLocalMessage,
+  bulkUpsertMessages,
+  getLocalConversation,
+  upsertLocalConversation,
+  getPendingMessages,
+  updateMessageSyncStatus,
+} from "../lib/db";
 
 export const useChatStore = create((set, get) => ({
   allContacts: [],
@@ -21,6 +31,8 @@ export const useChatStore = create((set, get) => ({
   // Phase 3: pagination state for the current open conversation
   hasMoreMessages: false,       // true = there are older messages to load
   isLoadingMoreMessages: false, // true = "load more" request is in flight
+  // Phase D: true when there are messages queued for offline sync
+  hasPendingMessages: false,
 
   setSearchQuery: (query) => set({ searchQuery: query }),
   setIsSettingsOpen: (isOpen) => set({ isSettingsOpen: isOpen }),
@@ -86,24 +98,90 @@ export const useChatStore = create((set, get) => ({
   },
 
   /**
-   * Fetch the MOST RECENT 30 messages for a conversation.
+   * Fetch messages for a conversation — IDB-first, then delta sync.
    *
-   * Phase 3 changes:
-   *   - Uses the in-memory cache as before (cache hit = instant, no network)
-   *   - On cache miss: calls the new paginated API → GET /messages/:id?limit=30
-   *   - API now returns { messages, hasMore } instead of a plain array
-   *   - Stores hasMore in state so ChatContainer knows whether to show the
-   *     "scroll to top → load more" trigger
+   * ── Phase C: IDB-first load pattern ─────────────────────────────────────────
    *
-   * Cache note: the cache stores the FULL set of currently-loaded messages
-   * (including any older pages already fetched). It is NOT invalidated when
-   * we load more — we simply prepend older messages to the cached array.
+   * How it works:
+   *   1. READ from IndexedDB instantly → render immediately (0ms "load")
+   *   2. Determine the newest cached message timestamp
+   *   3. Fire GET /messages/:id?since=<timestamp> in the background
+   *   4. Merge the delta (new messages only) into IDB + Zustand
+   *
+   * WHY: WhatsApp/Telegram feel instant because they show cached messages
+   * while syncing in the background. Without this, every conversation open
+   * shows a loading spinner while waiting for Atlas.
+   *
+   * FALLBACK: If IDB read fails or returns nothing, we fall back to the
+   * original full HTTP fetch (identical to old behaviour).
+   *
+   * CACHE COMPATIBILITY: We keep the in-memory messageCache working so
+   * existing code that reads it (loadMoreMessages, etc.) still works.
    */
   getMessagesByUserId: async (userId) => {
+    const { authUser } = useAuthStore.getState();
+    if (!authUser) return;
+
+    const myId = String(authUser._id);
+    const otherId = String(userId);
+    const convKey = conversationKey(myId, otherId);
+
+    // ── Step 1: Try IDB cache first ───────────────────────────────────────
+    const localMessages = await getLocalMessages(convKey);
+
+    if (localMessages.length > 0) {
+      // Show cached messages instantly — no loading spinner!
+      set({
+        messages: localMessages,
+        messageCache: { ...get().messageCache, [userId]: localMessages },
+        isMessagesLoading: false,
+        hasMoreMessages: get().hasMoreCache?.[userId] ?? false,
+      });
+
+      // ── Step 2: Delta sync in the background ─────────────────────────────
+      // Find the newest message timestamp we have cached
+      const newestMsg = localMessages[localMessages.length - 1];
+      const since = encodeURIComponent(newestMsg.createdAt);
+
+      try {
+        const res = await axiosInstance.get(`/messages/${userId}?since=${since}`);
+        const { messages: deltaMessages } = res.data;
+
+        if (deltaMessages.length > 0) {
+          // Write new messages to IDB
+          await bulkUpsertMessages(deltaMessages, myId);
+
+          // Merge into current state (append new messages, deduplicate by _id)
+          set((state) => {
+            const existingIds = new Set(state.messages.map((m) => String(m._id)));
+            const trulyNew = deltaMessages.filter((m) => !existingIds.has(String(m._id)));
+            if (trulyNew.length === 0) return state;
+
+            const updated = [...state.messages, ...trulyNew];
+            return {
+              messages: updated,
+              messageCache: { ...state.messageCache, [userId]: updated },
+            };
+          });
+        }
+
+        // Update last sync timestamp
+        await upsertLocalConversation({
+          conversationKey: convKey,
+          lastSyncAt: new Date().toISOString(),
+        });
+      } catch {
+        // Delta sync failed — cached data is still shown; user sees it instantly
+        // They just might be missing a few recent messages until next sync
+      }
+
+      return;
+    }
+
+    // ── Step 3: No IDB cache — fall back to full HTTP fetch ───────────────
+    // This is the original behaviour: show loading spinner, fetch 30 msgs
     const cached = get().messageCache[userId];
     if (cached) {
-      // Cache hit — load instantly, no network request.
-      // Restore hasMoreMessages from cache metadata.
       set({
         messages: cached,
         hasMoreMessages: get().hasMoreCache?.[userId] ?? false,
@@ -116,10 +194,16 @@ export const useChatStore = create((set, get) => ({
       const res = await axiosInstance.get(`/messages/${userId}?limit=30`);
       const { messages, hasMore } = res.data;
 
+      // Write to IDB for future instant loads
+      await bulkUpsertMessages(messages, myId);
+      await upsertLocalConversation({
+        conversationKey: convKey,
+        lastSyncAt: new Date().toISOString(),
+      });
+
       set((state) => ({
         messages,
         messageCache: { ...state.messageCache, [userId]: messages },
-        // Store hasMore in a separate cache map so it's restored on cache hit
         hasMoreCache: { ...state.hasMoreCache, [userId]: hasMore },
         hasMoreMessages: hasMore,
       }));
@@ -134,42 +218,32 @@ export const useChatStore = create((set, get) => ({
    * Load the NEXT PAGE of older messages for the current conversation.
    * Called when the user scrolls to the top of the chat.
    *
-   * Phase 3: This is the second half of cursor-based pagination.
-   *
-   * How the cursor works:
-   *   We take the createdAt of the OLDEST message we currently have
-   *   (messages[0].createdAt) and pass it as `before=<ISO>` to the server.
-   *   The server returns 30 messages with createdAt < that timestamp.
-   *
-   * Scroll position:
-   *   ChatContainer saves the scrollHeight BEFORE this call, then after the
-   *   state update it restores scrollTop = newScrollHeight - savedScrollHeight.
-   *   This "scroll anchor" technique keeps the viewport pinned to the same
-   *   message even as older messages are prepended above.
+   * Phase 3: cursor-based pagination (unchanged from before, now also writes to IDB).
    */
   loadMoreMessages: async (userId) => {
     const { messages, isLoadingMoreMessages, hasMoreMessages } = get();
+    const { authUser } = useAuthStore.getState();
 
-    // Guard: don't fire duplicate requests or load when nothing is left
     if (isLoadingMoreMessages || !hasMoreMessages) return;
 
-    // The cursor is the createdAt of the oldest message we have
     const oldestMessage = messages[0];
     if (!oldestMessage) return;
 
     set({ isLoadingMoreMessages: true });
     try {
-      // Pass the cursor timestamp so the server returns messages BEFORE it
       const cursor = encodeURIComponent(oldestMessage.createdAt);
       const res = await axiosInstance.get(`/messages/${userId}?before=${cursor}&limit=30`);
       const { messages: olderMessages, hasMore } = res.data;
 
+      // Write to IDB
+      if (authUser) {
+        await bulkUpsertMessages(olderMessages, String(authUser._id));
+      }
+
       set((state) => {
-        // Prepend older messages to the front of the list
         const updated = [...olderMessages, ...state.messages];
         return {
           messages: updated,
-          // Update cache so the full list is preserved across chat switches
           messageCache: { ...state.messageCache, [userId]: updated },
           hasMoreCache: { ...state.hasMoreCache, [userId]: hasMore },
           hasMoreMessages: hasMore,
@@ -183,42 +257,80 @@ export const useChatStore = create((set, get) => ({
   },
 
   /**
-   * Sends a message with an optimistic update.
+   * Sends a message with an optimistic update and offline queue support.
    *
-   * Phase 1 addition: the optimistic message now includes status: "sending"
-   * so the UI can render a clock/dot icon while the request is in-flight.
-   * Once the server confirms, the optimistic message is replaced with the
-   * real message (which has status: "sent" from the DB).
+   * ── Phase A: clientId idempotency ────────────────────────────────────────────
+   *   A UUID is generated before the HTTP request. The server stores it and
+   *   deduplicates retries by clientId. Safe to retry any number of times.
+   *
+   * ── Phase C: IDB write ───────────────────────────────────────────────────────
+   *   The message is written to IDB immediately (syncStatus: "pending").
+   *   On server confirm: syncStatus → "synced", _id updated.
+   *
+   * ── Phase D: Offline queue ───────────────────────────────────────────────────
+   *   If the HTTP request fails (offline), the message stays in IDB as "pending".
+   *   The service worker BackgroundSync tag "sync-pending-messages" will retry
+   *   automatically when the network recovers.
+   *
+   * ── Optimistic update (unchanged from before) ───────────────────────────────
+   *   The message is shown immediately with status "sending" before the server
+   *   confirms. On success → replaced with server response. On failure → IDB
+   *   entry stays "pending" with a visual indicator.
    */
   sendMessage: async (messageData) => {
     const { selectedUser, messages } = get();
     const { authUser } = useAuthStore.getState();
 
-    const tempId = `temp-${Date.now()}`;
+    // Generate a unique ID for this message BEFORE sending
+    // This is the cornerstone of idempotency: if the network fails and we
+    // retry, the server recognises clientId and returns the existing message.
+    const clientId = crypto.randomUUID();
+    const tempId = `temp-${clientId}`;
 
-    // Optimistic update: show message immediately before server confirms.
-    // status: "sending" is a client-only state — it means "not yet confirmed by server".
     const optimisticMessage = {
       _id: tempId,
+      clientId,
       senderId: authUser._id,
       receiverId: selectedUser._id,
       text: messageData.text,
       image: messageData.image || null,
       createdAt: new Date().toISOString(),
       status: "sending",   // client-only — shows a clock/dot icon
+      syncStatus: "pending",
       isOptimistic: true,
     };
+
+    // Show the message immediately in the UI
     set({ messages: [...messages, optimisticMessage] });
 
+    // Write to IDB immediately — this is what survives if the tab closes
+    const { authUser: currentUser } = useAuthStore.getState();
+    if (currentUser && selectedUser) {
+      const convKey = conversationKey(String(currentUser._id), String(selectedUser._id));
+      await upsertLocalMessage({
+        ...optimisticMessage,
+        conversationKey: convKey,
+      });
+    }
+
     try {
-      const res = await axiosInstance.post(`/messages/send/${selectedUser._id}`, messageData);
-      // Replace the optimistic message with the confirmed server message.
-      // The server message has status: "sent" (saved to DB).
+      const res = await axiosInstance.post(`/messages/send/${selectedUser._id}`, {
+        ...messageData,
+        clientId, // 👈 Phase A: pass clientId to server for idempotency
+      });
+
+      // Server confirmed — update the IDB record with real _id + "synced" status
+      await updateMessageSyncStatus(clientId, "synced", {
+        _id: res.data._id,
+        status: res.data.status,
+        createdAt: res.data.createdAt,
+      });
+
+      // Replace the optimistic message with the confirmed server message
       set((state) => {
         const updated = state.messages.map((m) => (m._id === tempId ? res.data : m));
         return {
           messages: updated,
-          // Update cache for this user too
           messageCache: { ...state.messageCache, [selectedUser._id]: updated },
         };
       });
@@ -247,10 +359,81 @@ export const useChatStore = create((set, get) => ({
         }
       });
     } catch (error) {
-      // Revert optimistic update on failure
-      set((state) => ({ messages: state.messages.filter((m) => m._id !== tempId) }));
-      toast.error(error.response?.data?.message || "Something went wrong");
+      // Network error — keep the message in IDB as "pending" so BackgroundSync
+      // can retry it when the network recovers. We do NOT remove the optimistic
+      // message from the UI — instead we change its status to "pending".
+      const isNetworkError = !error.response;
+
+      if (isNetworkError) {
+        // Register service worker BackgroundSync so the SW retries on reconnect
+        if ("serviceWorker" in navigator && "SyncManager" in window) {
+          try {
+            const registration = await navigator.serviceWorker.ready;
+            await registration.sync.register("sync-pending-messages");
+          } catch (syncErr) {
+            console.warn("[SW] BackgroundSync registration failed:", syncErr);
+          }
+        }
+
+        // Update the optimistic message to show "pending" state
+        set((state) => ({
+          messages: state.messages.map((m) =>
+            m._id === tempId ? { ...m, syncStatus: "pending", status: "sending" } : m
+          ),
+          hasPendingMessages: true,
+        }));
+        // Don't show error toast — message is queued, not lost
+      } else {
+        // Server rejected the message — remove optimistic update and mark IDB failed
+        await updateMessageSyncStatus(clientId, "failed");
+        set((state) => ({ messages: state.messages.filter((m) => m._id !== tempId) }));
+        toast.error(error.response?.data?.message || "Something went wrong");
+      }
     }
+  },
+
+  /**
+   * Retry all pending messages in IDB.
+   * Called when the app detects network recovery or the user taps "Retry".
+   */
+  retryPendingMessages: async () => {
+    const pending = await getPendingMessages();
+    if (pending.length === 0) {
+      set({ hasPendingMessages: false });
+      return;
+    }
+
+    for (const msg of pending) {
+      try {
+        const res = await axiosInstance.post(`/messages/send/${msg.receiverId}`, {
+          text: msg.text,
+          image: msg.image,
+          clientId: msg.clientId,
+        });
+
+        await updateMessageSyncStatus(msg.clientId, "synced", {
+          _id: res.data._id,
+          status: res.data.status,
+        });
+
+        // Update UI if this conversation is currently open
+        const { selectedUser } = get();
+        if (selectedUser && String(selectedUser._id) === String(msg.receiverId)) {
+          set((state) => ({
+            messages: state.messages.map((m) =>
+              m.clientId === msg.clientId ? { ...m, ...res.data } : m
+            ),
+          }));
+        }
+      } catch (err) {
+        // Still offline or server error — leave as pending
+        console.warn("[Retry] Failed to send pending message:", err.message);
+      }
+    }
+
+    // Check if any are still pending
+    const remaining = await getPendingMessages();
+    set({ hasPendingMessages: remaining.length > 0 });
   },
 
   /**
@@ -284,7 +467,11 @@ export const useChatStore = create((set, get) => ({
    *   1. Messages from any user arrive live even when the chat is not open
    *   2. Delivered ACKs are emitted immediately on receipt
    *   3. Read ACKs are emitted immediately when the chat is open
-   *   4. Tick marks (✓ -> ✓✓ -> cyan ✓✓) update live across both sender & receiver
+   *   4. Tick marks (✓ → ✓✓ → cyan ✓✓) update live across both sender & receiver
+   *
+   * ── Phase C addition: every incoming message is also written to IDB ─────────
+   *   This ensures that background messages (from users not currently open)
+   *   are persisted locally and available instantly next time you open that chat.
    */
   initSocketListeners: (socket) => {
     if (!socket) return;
@@ -297,10 +484,24 @@ export const useChatStore = create((set, get) => ({
     socket.off("stopTyping");
 
     // ── 1. newMessage ──────────────────────────────────────────────────────────
-    socket.on("newMessage", (newMessage) => {
+    socket.on("newMessage", async (newMessage) => {
       const { selectedUser, isSoundEnabled } = get();
+      const { authUser } = useAuthStore.getState();
       const isFromSelectedUser =
         selectedUser && String(newMessage.senderId) === String(selectedUser._id);
+
+      // Phase C: write to IDB regardless of whether chat is open
+      if (authUser) {
+        const myId = String(authUser._id);
+        const otherId = String(newMessage.senderId) === myId
+          ? String(newMessage.receiverId)
+          : String(newMessage.senderId);
+        await upsertLocalMessage({
+          ...newMessage,
+          syncStatus: "synced",
+          conversationKey: conversationKey(myId, otherId),
+        });
+      }
 
       if (isFromSelectedUser) {
         // Message is from the active chat — append to visible messages
@@ -368,7 +569,7 @@ export const useChatStore = create((set, get) => ({
       }
     });
 
-    // ── 2. messageStatusUpdate (e.g. sent -> delivered) ────────────────────────
+    // ── 2. messageStatusUpdate (e.g. sent → delivered) ────────────────────────
     socket.on("messageStatusUpdate", ({ messageId, status }) => {
       set((state) => {
         const updateMsg = (msgs) =>
@@ -384,7 +585,7 @@ export const useChatStore = create((set, get) => ({
       });
     });
 
-    // ── 3. messagesRead (e.g. receiver opened chat -> turn sent messages cyan) ──
+    // ── 3. messagesRead (e.g. receiver opened chat → turn sent messages cyan) ──
     socket.on("messagesRead", ({ readBy, senderId }) => {
       const { authUser } = useAuthStore.getState();
       if (!authUser) return;
@@ -435,4 +636,3 @@ export const useChatStore = create((set, get) => ({
     // Keep global listeners active; no-op to prevent tearing down listeners on chat navigation
   },
 }));
-

@@ -6,9 +6,10 @@ import PageLoader from "./components/PageLoader";
 import { Toaster } from "react-hot-toast";
 
 // Lazy load pages to reduce initial bundle size
-const ChatPage   = lazy(() => import("./pages/ChatPage"));
-const LoginPage  = lazy(() => import("./pages/LoginPage"));
-const SignUpPage = lazy(() => import("./pages/SignUpPage"));
+const ChatPage          = lazy(() => import("./pages/ChatPage"));
+const LoginPage         = lazy(() => import("./pages/LoginPage"));
+const SignUpPage        = lazy(() => import("./pages/SignUpPage"));
+const PWAInstallPrompt  = lazy(() => import("./components/PWAInstallPrompt"));
 
 function App() {
   const { checkAuth, isCheckingAuth, authUser } = useAuthStore();
@@ -40,6 +41,11 @@ function App() {
           },
         }}
       />
+
+      {/* PWA install prompt + update banner — lazy loaded, shown conditionally */}
+      <Suspense fallback={null}>
+        <PWAInstallPrompt />
+      </Suspense>
     </div>
   );
 }

@@ -70,6 +70,15 @@ export const useAuthStore = create((set, get) => ({
     try {
       await axiosInstance.post("/auth/logout");
       set({ authUser: null });
+
+      // Unsubscribe from push notifications (remove subscription from server)
+      import("../lib/push").then(({ unsubscribeFromPush }) => {
+        unsubscribeFromPush().catch(() => {});
+      });
+
+      // Clear local IndexedDB so no sensitive messages linger on shared devices
+      import("../lib/db").then(({ clearLocalDB }) => clearLocalDB()).catch(() => {});
+
       toast.success("Logged out successfully");
       get().disconnectSocket();
     } catch (error) {
@@ -117,7 +126,17 @@ export const useAuthStore = create((set, get) => ({
       // Initialize chat listeners upon connection and reconnection
       import("./useChatStore").then(({ useChatStore }) => {
         useChatStore.getState().initSocketListeners(socket);
+        // On reconnect, retry any messages that were queued while offline
+        useChatStore.getState().retryPendingMessages();
       });
+
+      // Subscribe to push notifications after socket connects (deferred so it
+      // doesn't block the connection and doesn't interrupt the user)
+      setTimeout(() => {
+        import("../lib/push").then(({ subscribeToPush }) => {
+          subscribeToPush().catch(() => {});
+        });
+      }, 2000); // 2s delay so user is settled into the app before permission prompt
     });
 
     socket.on("disconnect", (reason) => {

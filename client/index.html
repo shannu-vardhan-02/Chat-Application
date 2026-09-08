@@ -2,9 +2,27 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>muCHATlu</title>
+
+    <!-- App identity -->
+    <title>Charchalu</title>
+    <meta name="description" content="Real-time chat — offline ready. Chat with anyone, anywhere." />
+
+    <!-- PWA: Web App Manifest (makes the app installable) -->
+    <link rel="manifest" href="/manifest.json" />
+
+    <!-- PWA: Theme color (browser chrome / status bar color on mobile) -->
+    <meta name="theme-color" content="#0f172a" />
+
+    <!-- PWA: Apple-specific meta tags (Safari on iOS) -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Charchalu" />
+    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
   </head>
   <body>
     <div id="root"></div>

@@ -2,7 +2,8 @@ import Message from "../models/message.model.js";
 import User from "../models/user.model.js";
 import Conversation from "../models/conversation.model.js";
 import cloudinary from "../lib/cloudinary.js";
-import { getReceiverSocketId, io } from "../lib/socket.js";
+import { getReceiverSocketId, io, isUserOnline } from "../lib/socket.js";
+import { sendPushNotification } from "../lib/webpush.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -217,9 +218,10 @@ export const getMessagesByUserId = async (req, res) => {
     const { id: userToChatId } = req.params;
 
     // Parse pagination params
-    // `before` is the createdAt ISO string of the oldest message the client has.
-    // `limit` defaults to 30, capped at 50 to prevent abuse.
-    const { before } = req.query;
+    // `before` is the createdAt ISO string of the oldest message the client has (load-more)
+    // `since`  is the createdAt ISO string of the newest message the client has (delta sync)
+    // `limit`  defaults to 30, capped at 50 to prevent abuse
+    const { before, since } = req.query;
     const limit = Math.min(parseInt(req.query.limit) || 30, 50);
 
     // Build the base filter — find messages between these two users
@@ -230,30 +232,45 @@ export const getMessagesByUserId = async (req, res) => {
       ],
     };
 
-    // If a cursor is provided, only fetch messages OLDER than that timestamp.
-    // This is the core of cursor-based pagination:
-    //   "Give me messages created before <timestamp>"
+    /**
+     * ── Delta sync mode (?since=<ISO>) ──────────────────────────────────────
+     *
+     * Used by the IDB-first load pattern in the client:
+     *   1. Client shows cached IDB messages instantly (0ms render)
+     *   2. Client sends GET /messages/:id?since=<newestCachedMessage.createdAt>
+     *   3. Server returns only messages AFTER that timestamp
+     *   4. Client merges the delta into IDB + Zustand state
+     *
+     * This replaces the full 30-message fetch for already-cached conversations,
+     * typically returning 0-5 messages instead of 30.
+     */
+    if (since) {
+      filter.createdAt = { $gt: new Date(since) };
+      const messages = await Message.find(filter).sort({ createdAt: 1 });
+      return res.status(200).json({ messages, hasMore: false, isDelta: true });
+    }
+
+    /**
+     * ── Cursor pagination mode (?before=<ISO>) ──────────────────────────────
+     *
+     * If a cursor is provided, only fetch messages OLDER than that timestamp.
+     * This is the core of "load more" pagination when scrolling to the top.
+     *   "Give me messages created before <timestamp>"
+     */
     if (before) {
       filter.createdAt = { $lt: new Date(before) };
     }
 
     // Step 1: Fetch `limit` messages in DESCENDING order (newest first).
-    //         This is the most efficient query because we:
-    //           a) Use the compound index (senderId + receiverId + createdAt)
-    //           b) Immediately limit the result set — no large scan
+    //         Use the compound index: {senderId, receiverId, createdAt}
     const rawMessages = await Message.find(filter)
       .sort({ createdAt: -1 }) // newest first (descending)
       .limit(limit);
 
     // Step 2: Reverse to ascending order (oldest first) for rendering.
-    //         We can't sort ASC + limit because we'd always get the oldest N,
-    //         not the newest N. So we sort DESC, take the page, then reverse.
     const messages = rawMessages.reverse();
 
     // Step 3: Determine if there are even older messages.
-    //         hasMore = true means the client should show a "Load more" trigger.
-    //         If we got exactly `limit` messages back, there are probably more.
-    //         If we got fewer, we've reached the beginning of the conversation.
     const hasMore = rawMessages.length === limit;
 
     res.status(200).json({ messages, hasMore });
@@ -274,7 +291,7 @@ export const getMessagesByUserId = async (req, res) => {
  */
 export const sendMessage = async (req, res) => {
   try {
-    const { text, image } = req.body;
+    const { text, image, clientId } = req.body;
     const senderId = req.user._id;
     const { id: receiverId } = req.params;
 
@@ -302,16 +319,40 @@ export const sendMessage = async (req, res) => {
       }
     }
 
-    // ── Step 1: Save the message ──────────────────────────────────────────
-    const newMessage = new Message({
-      senderId,
-      receiverId,
-      text,
-      image: imageUrl,
-      // status: "sent" is default in schema
-    });
-
-    await newMessage.save();
+    /**
+     * ── Idempotency check ───────────────────────────────────────────────────
+     *
+     * The client sends a clientId (UUID v4) generated before the HTTP request.
+     * If the same clientId arrives again (network retry after timeout), we
+     * return the already-stored message instead of creating a duplicate.
+     *
+     * Strategy: optimistic insert → catch duplicate key error (code 11000).
+     * This is faster than a pre-check findOne() + insert because the happy
+     * path (new message) only touches the DB once. The rare retry path hits
+     * the catch block and does one extra findOne().
+     */
+    let newMessage;
+    try {
+      newMessage = await Message.create({
+        senderId,
+        receiverId,
+        text,
+        image: imageUrl,
+        clientId: clientId || undefined, // omit if not provided (old behaviour)
+        // status: "sent" is default in schema
+      });
+    } catch (err) {
+      // Duplicate clientId — this is a retry. Return the existing message.
+      if (err.code === 11000 && clientId) {
+        const existing = await Message.findOne({ clientId });
+        if (existing) {
+          // Emit to receiver in case they missed the first delivery
+          io.to(String(receiverId)).emit("newMessage", existing);
+          return res.status(200).json(existing);
+        }
+      }
+      throw err; // any other DB error — let the outer catch handle it
+    }
 
     // ── Step 2: Instant Real-time delivery ──────────────────────────────────
     // Deliver immediately to ALL active tabs of the receiver via their room.
@@ -321,11 +362,62 @@ export const sendMessage = async (req, res) => {
     // ── Step 3: Immediate HTTP response to sender ──────────────────────────
     res.status(201).json(newMessage);
 
-    // ── Step 4: Asynchronous Conversation Sync ─────────────────────────────
-    // Run in background without blocking the HTTP response or socket emission.
-    upsertConversation(newMessage).catch((err) =>
-      console.error("Async upsertConversation error:", err.message)
-    );
+    // ── Step 4: Asynchronous Conversation Sync + Push Notification ─────────
+    // All async work runs in background without blocking the HTTP response.
+    Promise.all([
+      // 4a: Keep the Conversation document in sync for the sidebar
+      upsertConversation(newMessage).catch((err) =>
+        console.error("Async upsertConversation error:", err.message)
+      ),
+
+      // 4b: Push notification — only when receiver is offline (not on Socket.IO)
+      // If they're online, socket already delivered it. No need to double-notify.
+      (async () => {
+        if (!isUserOnline(String(receiverId))) {
+          try {
+            const sender = await User.findById(senderId).select("fullName");
+            const receiver = await User.findById(receiverId).select("pushSubscriptions");
+
+            if (!receiver?.pushSubscriptions?.length) return; // no subscriptions
+
+            const notificationBody = newMessage.text
+              ? newMessage.text.slice(0, 100)
+              : "📷 Sent a photo";
+
+            // Notify all devices of the receiver concurrently
+            const results = await Promise.allSettled(
+              receiver.pushSubscriptions.map((sub) =>
+                sendPushNotification(sub, {
+                  title: sender?.fullName || "Charchalu",
+                  body: notificationBody,
+                  tag: `chat-${String(senderId)}`, // collapse by sender
+                  data: {
+                    senderId: String(senderId),
+                    url: "/",
+                  },
+                })
+              )
+            );
+
+            // Clean up expired subscriptions (410 Gone / 404 Not Found)
+            const expiredEndpoints = receiver.pushSubscriptions
+              .filter((_, i) => {
+                const result = results[i];
+                return result.status === "rejected" && result.reason?.subscriptionExpired;
+              })
+              .map((sub) => sub.endpoint);
+
+            if (expiredEndpoints.length > 0) {
+              await User.findByIdAndUpdate(receiverId, {
+                $pull: { pushSubscriptions: { endpoint: { $in: expiredEndpoints } } },
+              });
+            }
+          } catch (pushErr) {
+            console.warn("[Push] Notification delivery error:", pushErr.message);
+          }
+        }
+      })(),
+    ]).catch(() => {}); // swallow top-level errors — message is already sent
   } catch (error) {
     console.log("Error sending message:", error);
     res.status(500).json({ message: "Server Error" });
