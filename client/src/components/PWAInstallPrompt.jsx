@@ -141,9 +141,9 @@ function PWAInstallPrompt() {
             animate-in slide-in-from-right-4 duration-300 max-w-xs"
         >
           <img
-            src="/icons/icon-192.png"
+            src="/favicon.svg"
             alt="Charchalu"
-            className="size-10 rounded-xl shrink-0 object-cover"
+            className="size-10 rounded-xl shrink-0 object-contain bg-slate-900 p-1"
           />
           <div className="min-w-0">
             <p className="text-sm font-semibold text-slate-100">Install Charchalu</p>

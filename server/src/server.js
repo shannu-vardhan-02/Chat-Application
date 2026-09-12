@@ -42,6 +42,28 @@ app.use(express.json({ limit: "100kb" })); // Images no longer pass through serv
 app.use(cookieParser()); // parse cookies for JWT authentication
 app.use(requestTracker); // Track every request duration, requestId, and telemetry
 
+/**
+ * GET /api/ping — Unauthenticated keep-alive / health-check endpoint.
+ *
+ * WHY THIS EXISTS:
+ *   Render's free tier spins down instances after ~15 minutes of inactivity,
+ *   causing 30–60s cold starts on the next visitor's request. Two mechanisms
+ *   use this endpoint to combat that:
+ *
+ *   1. External cron / UptimeRobot — pings every 10–14 minutes to keep the
+ *      instance warm between real user visits.
+ *
+ *   2. Frontend proactive wake-up — fires this request immediately on app
+ *      mount (before checkAuth) so the server starts warming up in parallel
+ *      with React initialization, overlapping the cold-start latency.
+ *
+ * This endpoint intentionally skips all auth middleware and never touches
+ * the database — it must respond in <5ms even after a warm start.
+ */
+app.get("/api/ping", (_, res) => {
+  res.status(200).json({ ok: true, ts: Date.now() });
+});
+
 app.use("/api/auth", authRoutes);
 app.use("/api/messages", messageRoutes);
 app.use("/api/upload", uploadRoutes);

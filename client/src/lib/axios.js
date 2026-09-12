@@ -51,4 +51,17 @@ axiosInstance.interceptors.response.use(
   }
 );
 
-
+/**
+ * pingBackend — Fire-and-forget keep-alive / wake-up ping.
+ *
+ * Called immediately on app mount (before checkAuth) so the Render container
+ * starts initializing in parallel with React. If the server is already warm
+ * this is a near-zero-cost no-op (< 5ms server-side). If cold, it shaves
+ * meaningful seconds off the perceived load by overlapping the warm-up with
+ * React initialization time.
+ *
+ * Never throws — errors are intentionally swallowed so startup is never blocked.
+ */
+export function pingBackend() {
+  axiosInstance.get("/ping").catch(() => {}); // fire-and-forget, never awaited
+}
