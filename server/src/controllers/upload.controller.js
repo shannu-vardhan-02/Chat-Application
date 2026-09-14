@@ -25,9 +25,6 @@ export const generateUploadSignature = (req, res) => {
     const paramsToSign = {
       timestamp,
       folder,
-      // Auto-select the best format (WebP for browsers that support it)
-      quality: "auto",
-      fetch_format: "auto",
     };
 
     const signature = cloudinary.utils.api_sign_request(

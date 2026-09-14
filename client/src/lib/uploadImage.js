@@ -98,8 +98,6 @@ export async function uploadToCloudinary(file, uploadType = "message", onProgres
   formData.append("timestamp", sigData.timestamp);
   formData.append("signature", sigData.signature);
   formData.append("folder", sigData.folder);
-  formData.append("quality", "auto");
-  formData.append("fetch_format", "auto");
 
   const uploadUrl = `https://api.cloudinary.com/v1_1/${sigData.cloudName}/image/upload`;
 
