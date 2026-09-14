@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback, useEffect } from "react";
 import useKeyboardSound from "../hooks/useKeyboardSound";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
@@ -103,7 +103,82 @@ function MessageInput() {
   );
 
 
-  // Enter = send
+  // ── Global keyboard-first UX ────────────────────────────────────────────────
+  //
+  // HOW IT WORKS:
+  //   - Window-level keydown listener fires for every key press on the page
+  //   - If the message input is already focused → do nothing (normal typing)
+  //   - If the active element is another input/textarea/contenteditable → skip
+  //     (don't hijack search bars, settings fields, etc.)
+  //   - Ignore modifier combos (Ctrl+C, Cmd+Z, etc.) — these are browser shortcuts
+  //   - For printable characters: focus the input and SET the character in state
+  //     (the browser's native "key repeating into focused input" doesn't fire
+  //      since we focus() programmatically, so we manually append the char)
+  //   - For Enter/Backspace/Space: just focus the input, the key then fires again
+  //     inside the focused input naturally
+  //   - Escape: blurs the input so the user can navigate away
+  //
+  // WHY useEffect + window listener (not onKeyDown on the form):
+  //   The form's onKeyDown only fires when the form or its children are focused.
+  //   We need to intercept keypresses when focus is on the message list, avatar,
+  //   or any non-form element — that requires a window-level listener.
+  useEffect(() => {
+    if (!selectedUser) return; // no listener when no chat is open
+
+    const handleGlobalKeyDown = (e) => {
+      // 1. Skip if already typing in the message input — let native input handle it
+      if (document.activeElement === inputRef.current) return;
+
+      // 2. Skip if focus is inside any other input, textarea, or contenteditable
+      //    (search bar, settings modal, etc. — don't hijack those)
+      const tag = document.activeElement?.tagName?.toLowerCase();
+      const isEditable = document.activeElement?.isContentEditable;
+      if (tag === "input" || tag === "textarea" || tag === "select" || isEditable) return;
+
+      // 3. Skip modifier combos (Ctrl+C, Cmd+V, Alt+Tab, etc.)
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+      // 4. Skip non-printable / navigation keys that shouldn't trigger focus
+      const skipKeys = new Set([
+        "Tab", "CapsLock", "Shift", "Control", "Alt", "Meta",
+        "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+        "Home", "End", "PageUp", "PageDown",
+        "Insert", "Delete", "ContextMenu", "Dead",
+        "F1","F2","F3","F4","F5","F6","F7","F8","F9","F10","F11","F12",
+        "PrintScreen", "ScrollLock", "Pause",
+        "AudioVolumeMute", "AudioVolumeDown", "AudioVolumeUp",
+        "MediaTrackNext", "MediaTrackPrevious", "MediaPlayPause",
+      ]);
+      if (skipKeys.has(e.key)) return;
+
+      // 5. Escape → blur the input (let user navigate away with keyboard)
+      if (e.key === "Escape") {
+        inputRef.current?.blur();
+        return;
+      }
+
+      // 6. Focus the input first
+      inputRef.current?.focus();
+
+      // 7. Printable characters (length === 1 means it's a single char, not "Enter" etc.)
+      //    We need to manually insert the character because calling focus() after the
+      //    keydown event fires means the browser doesn't route the keypress into the input.
+      if (e.key.length === 1) {
+        e.preventDefault(); // prevent double-insertion
+        setText((prev) => prev + e.key);
+        // Trigger typing indicator since the user is actively typing
+        emitTyping();
+        if (isSoundEnabled) playRandomKeyStrokeSound();
+      }
+      // For Enter, Backspace, Space — the browser will fire those into the
+      // now-focused input naturally on the next event cycle (no manual handling needed)
+    };
+
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => window.removeEventListener("keydown", handleGlobalKeyDown);
+  }, [selectedUser, emitTyping, isSoundEnabled, playRandomKeyStrokeSound]);
+
+  // Enter = send (inside the focused input)
   const handleKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();

@@ -99,8 +99,10 @@ function LoginPage() {
             <div className="hidden md:w-1/2 md:flex items-center justify-center p-6 bg-gradient-to-bl from-slate-800/20 to-transparent">
               <div>
                 <img
-                  src="/login.png"
+                  src="/login.webp"
                   alt="People using mobile devices"
+                  loading="lazy"
+                  decoding="async"
                   className="w-full h-auto object-contain"
                 />
                 <div className="mt-6 text-center">

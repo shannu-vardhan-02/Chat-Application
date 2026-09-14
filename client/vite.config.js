@@ -48,7 +48,16 @@ export default defineConfig({
       injectRegister: "auto",
 
       // Include these files in the precache manifest
-      includeAssets: ["favicon.svg", "icons/icon.svg", "icons/icon-192.png", "icons/icon-512.png", "avatar.png"],
+      includeAssets: [
+        "favicon.svg",
+        "icons/icon-192.png",
+        "icons/icon-512.png",
+        "icons/icon-192.webp",
+        "icons/icon-512.webp",
+        "avatar.png",
+        "login.webp",
+        "signup.webp",
+      ],
 
       manifest: {
         name: "Charchalu",
@@ -153,7 +162,7 @@ export default defineConfig({
         // when the network comes back. Works in conjunction with useChatStore.sendMessage().
         // Note: The JS-level retry in useAuthStore.connectSocket is the primary mechanism.
         // BackgroundSync is the fallback for when the tab was closed.
-        globPatterns: ["**/*.{js,css,html,ico,png,svg,woff2}"],
+        globPatterns: ["**/*.{js,css,html,ico,png,svg,webp,woff2}"],
         skipWaiting: false, // don't auto-activate new SW (we prompt the user)
         clientsClaim: false,
       },
