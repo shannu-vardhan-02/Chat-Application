@@ -19,7 +19,7 @@ import { uploadToCloudinary } from "../lib/uploadImage";
 const mouseClickSound = new Audio("/sounds/mouse-click.mp3");
 
 function SettingsModal() {
-  const { authUser, updateProfile, logout } = useAuthStore();
+  const { authUser, updateProfile, setIsLogoutModalOpen } = useAuthStore();
   const { isSettingsOpen, setIsSettingsOpen, isSoundEnabled, toggleSound } = useChatStore();
 
   const [fullName, setFullName] = useState(authUser?.fullName || "");
@@ -291,8 +291,12 @@ function SettingsModal() {
           <div>
             <button
               onClick={() => {
+                if (isSoundEnabled) {
+                  mouseClickSound.currentTime = 0;
+                  mouseClickSound.play().catch(() => {});
+                }
                 setIsSettingsOpen(false);
-                logout();
+                setIsLogoutModalOpen(true);
               }}
               className="w-full flex items-center justify-center space-x-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 py-2.5 rounded-xl font-medium text-sm transition-colors"
             >

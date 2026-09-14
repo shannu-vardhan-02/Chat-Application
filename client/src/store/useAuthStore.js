@@ -63,6 +63,10 @@ export const useAuthStore = create((set, get) => ({
   isLoggingIn: false,
   socket: null,
   onlineUsers: [],
+  isLogoutModalOpen: false,
+  isLoggingOut: false,
+
+  setIsLogoutModalOpen: (isOpen) => set({ isLogoutModalOpen: isOpen }),
 
   // Called on app mount to validate the session and correct the optimistic state.
   // Also fires a background ping to wake the Render server in parallel.
@@ -122,11 +126,12 @@ export const useAuthStore = create((set, get) => ({
   },
 
   logout: async () => {
+    set({ isLoggingOut: true });
     try {
       await axiosInstance.post("/auth/logout");
       // Clear the localStorage hint FIRST so the next page load doesn't see stale auth
       setAuthUserHint(null);
-      set({ authUser: null });
+      set({ authUser: null, isLogoutModalOpen: false });
 
       // Unsubscribe from push notifications (remove subscription from server)
       import("../lib/push").then(({ unsubscribeFromPush }) => {
@@ -141,6 +146,8 @@ export const useAuthStore = create((set, get) => ({
     } catch (error) {
       toast.error(error.response?.data?.message || "Error logging out");
       console.log("Logout error:", error);
+    } finally {
+      set({ isLoggingOut: false });
     }
   },
 

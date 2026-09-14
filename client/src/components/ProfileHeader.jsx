@@ -5,7 +5,7 @@ import { useChatStore } from "../store/useChatStore";
 const mouseClickSound = new Audio("/sounds/mouse-click.mp3");
 
 function ProfileHeader() {
-  const { logout, authUser } = useAuthStore();
+  const { setIsLogoutModalOpen, authUser } = useAuthStore();
   const { isSoundEnabled, toggleSound, setIsSettingsOpen } = useChatStore();
 
   return (
@@ -65,7 +65,13 @@ function ProfileHeader() {
         {/* Logout */}
         <button
           id="logout-btn"
-          onClick={logout}
+          onClick={() => {
+            if (isSoundEnabled) {
+              mouseClickSound.currentTime = 0;
+              mouseClickSound.play().catch(() => {});
+            }
+            setIsLogoutModalOpen(true);
+          }}
           title="Logout"
           className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors"
         >

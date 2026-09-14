@@ -9,6 +9,7 @@ import ContactList from "../components/ContactList";
 import ChatContainer from "../components/ChatContainer";
 import NoConversationPlaceholder from "../components/NoConversationPlaceholder";
 import SettingsModal from "../components/SettingsModal";
+import LogoutConfirmModal from "../components/LogoutConfirmModal";
 
 function ChatPage() {
   const { activeTab, selectedUser, setIsSettingsOpen } = useChatStore();
@@ -70,6 +71,9 @@ function ChatPage() {
 
       {/* Settings Modal */}
       <SettingsModal />
+
+      {/* Logout Confirmation Modal */}
+      <LogoutConfirmModal />
     </div>
   );
 }
